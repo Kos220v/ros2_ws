@@ -1,0 +1,42 @@
+# ============================================================================
+# УСТАРЕЛО / ЗАМЕНЕНО.
+#
+# Этот файл больше не используется в start.launch.py. Он был неполным:
+#   - не фьюзил GPS вообще (ключ "navsat0" здесь никогда не работал — у
+#     ekf_filter_node просто нет такого параметра, это параметр
+#     navsat_transform_node; он тут ничего не делал);
+#   - two_d_mode/world_frame были не согласованы с остальным проектом.
+#
+# Используйте вместо этого:
+#   project_start/config/ekf_local.yaml       — локальный EKF (odom -> base_link)
+#   project_start/config/ekf_global.yaml      — глобальный EKF (map -> odom, с GPS)
+#   project_start/config/navsat_transform.yaml — преобразование GPS
+#
+# Файл оставлен для истории и совместимости, но start.launch.py его больше
+# не подключает. Смело удалите его, когда убедитесь, что новая схема работает.
+# ============================================================================
+ekf_filter_node:
+  ros__parameters:
+    frequency: 50.0
+    sensor_timeout: 1.0
+    two_d_mode: true
+    publish_tf: true
+    print_diagnostics: true
+
+    odom0: /odom
+    odom0_config: [true, true, false, false, false, true, true, true, false]
+    odom0_differential: false
+    odom0_relative: false
+
+    imu0: /imu
+    imu0_config: [false, false, false, true, true, true, false, false, false, true, true, true]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
+
+    initial_estimate_covariance: [1e-1, 0, 0, 0, 0, 0,
+                                  0, 1e-1, 0, 0, 0, 0,
+                                  0, 0, 1e-9, 0, 0, 0,
+                                  0, 0, 0, 1e-1, 0, 0,
+                                  0, 0, 0, 0, 1e-1, 0,
+                                  0, 0, 0, 0, 0, 1e-1]

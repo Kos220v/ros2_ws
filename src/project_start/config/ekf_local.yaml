@@ -1,0 +1,63 @@
+# ============================================================================
+# ЛОКАЛЬНЫЙ EKF (world_frame: odom) — публикует TF odom -> base_link.
+#
+# Фьюжит:
+#   - /odom       (robot_odom, гусеничная одометрия: позиция x,y + скорости)
+#   - /imu/data   (compass_node: курс/yaw из компаса + скорость поворота
+#                  из гироскопа mpu6050 — см. compass_control/compass_node.py)
+#
+# Это "рабочая" локализация для езды и построения карты (SLAM) — плавная,
+# без скачков, но со временем УХОДИТ (дрейфует), поэтому глобальные абсолютные
+# координаты берёт второй EKF (ekf_global.yaml), использующий GPS через
+# navsat_transform_node.
+#
+# Основано на шаблоне из vendored-пакета robot_localization
+# (src/robot_localization/params/dual_ekf_navsat_example.yaml), адаптировано
+# под реальные топики этого проекта и two_d_mode (гусеничный робот едет по
+# земле, 3D-версия шаблона не нужна).
+# ============================================================================
+ekf_filter_node_odom:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    # Колёсная/гусеничная одометрия: используем позицию x,y + скорость
+    # (vx и vyaw — единственные физически осмысленные скорости для
+    # дифференциального привода; yaw-ориентацию из одометрии НЕ фьюзим,
+    # т.к. абсолютный курс даёт компас через imu0 ниже).
+    odom0: /odom
+    odom0_config: [true,  true,  false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+    odom0_relative: false
+    odom0_queue_size: 10
+
+    # Компас (курс/yaw) + гироскоп (скорость поворота), см. compass_node.py
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,      # ← убрали absolute yaw компаса
+                  false, false, false,
+                  false, false, true,       # ← оставили vyaw из гироскопа
+                  false, false, false]
+    imu0_differential: false
+    imu0_relative: false
+    imu0_queue_size: 10
+    imu0_remove_gravitational_acceleration: true
+
+    use_control: false
+
+    process_noise_covariance: [1e-3, 1e-3, 1e-3, 0.3, 0.3, 0.02, 0.5, 0.5, 0.1, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+    initial_estimate_covariance: [1e-9, 1e-9, 1e-9, 1.0, 1.0, 1e-9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

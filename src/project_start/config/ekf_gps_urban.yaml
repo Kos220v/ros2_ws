@@ -1,0 +1,91 @@
+# ============================================================
+# ekf_gps.yaml — уличная навигация (GPS waypoint following)
+# ============================================================
+# Архитектура:
+#   /fix (GPS) -> navsat_transform -> /odometry/gps (метры от datum)
+#   /odom (наш odom_node: x,y,yaw от магнитометра) -> ekf_global
+#   ekf_global -> /odometry/global (метры от старта, world_frame=map)
+#   waypoint_follower -> /cmd_vel/auto_goal -> obstacle_avoider
+#                   -> /cmd_vel/auto -> cmd_switcher -> /cmd_vel -> привод
+#
+# ВАЖНО про TF:
+#   world_frame: map  (отличается от odom_frame) -> robot_localization
+#   публикует ТОЛЬКО map -> odom, а НЕ odom -> base_link.
+#   odom -> base_link публикует НАШ odom_node. Конфликта нет.
+# ============================================================
+
+ekf_global:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    publish_tf: true           # публикует map -> odom (т.к. world_frame=map != odom_frame)
+
+    # Фреймы
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: map           # глобальная привязка к GPS (улица)
+
+    # --- локальная одометрия (наш /odom: x,y + yaw от магнитометра) ---
+    odom0: /odom
+    odom0_config: [true,  true,  false,   # x, y, z
+                   false, false, true,    # roll, pitch, yaw
+                   true,  true,  false,   # vx, vy, vz
+                   false, false, true]    # vroll, vpitch, vyaw
+    odom0_queue_size: 10
+    odom0_nodelay: true
+    odom0_differential: false
+    odom0_relative: false
+
+    # --- GPS в метрах от datum (выход navsat_transform) ---
+    odom1: /odometry/gps
+    odom1_config: [true,  true,  false,   # x, y (позиция от GPS)
+                   false, false, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_nodelay: true
+    odom1_differential: false
+    odom1_relative: false
+
+    # --- IMU (опционально, если нужен стабильный уровень roll/pitch) ---
+    # imu0: /imu/data
+    # imu0_config: [false, false, false,   # x, y, z
+    #               true,  true,  false,   # roll, pitch, yaw
+    #               false, false, false,
+    #               false, false, false]
+    # imu0_queue_size: 10
+    # imu0_differential: false
+    # imu0_relative: false
+    # imu0_remove_gravitational_acceleration: false
+
+    # --- шум процесса (настраивайте под поведение робота) ---
+    process_noise_covariance: [0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.06, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.025, 0.0, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.025, 0.0, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.04, 0.0, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01, 0.0,
+                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01]
+
+navsat_transform:
+  ros__parameters:
+    frequency: 30.0
+    delay: 3.0                 # подождать данные GPS перед публикацией
+    # Магнитное склонение Нижнего Новгорода (56.3N, 43.9E): ~ +12° (восточное).
+    # Проверьте/уточните на https://www.ngdc.noaa.gov/geomag-web/
+    magnetic_declination_radians: 0.20944   # = 12.0° * pi/180
+    yaw_offset: 0.0            # 0, если ось X компаса совпадает с осью X робота
+    zero_altitude: true
+    publish_filtered_gps: true # -> /odometry/gps (метры от datum)
+    use_odometry_yaw: false    # курс от магнитометра (наш /imu.data)
+    wait_for_datum: false      # datum передаётся через launch (home_latitude/longitude)
+    broadcast_utm_transform: false
+    # datum можно задать и здесь (если не через launch):
+    # datum: [56.2991446, 43.9230612, 0.0]
