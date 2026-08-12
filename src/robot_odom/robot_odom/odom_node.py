@@ -191,6 +191,10 @@ class OdomNode(Node):
         # Полезно в режиме без компаса (курс от гироскопа), чтобы убрать
         # джиттер от шума гироскопа.
         self.declare_parameter("yaw_smoothing", 0.0)
+        # Отладочный лог каждые N секунд (0 — выключен): текущий yaw,
+        # магнитный курс, их расхождение, уровень и гироскоп Z.
+        # Нужен для диагностики «угол скачет/вращается при стоящем роботе».
+        self.declare_parameter("debug_period_sec", 0.0)
         # Фиксированная поправка курса (град): добавляется к итоговому yaw.
         # Удобно для компенсации остаточного смещения (hard-iron/неточный
         # mag_yaw_offset). Положительная — по часовой, отрицательная — против.
@@ -289,6 +293,8 @@ class OdomNode(Node):
         ])
         self.yaw_smoothing = float(self.get_parameter("yaw_smoothing").value)
         self._yaw_smoothed = None
+        self.debug_period_sec = float(self.get_parameter("debug_period_sec").value)
+        self._last_debug_log = 0.0
         self.acc_invert = bool(self.get_parameter("acc_invert").value)
         self.mount_roll = float(self.get_parameter("imu_mount_roll_deg").value)
         self.mount_pitch = float(self.get_parameter("imu_mount_pitch_deg").value)
@@ -634,6 +640,39 @@ class OdomNode(Node):
         self.current_yaw = self._quat_yaw(self.q)
         self.current_gyro = gyro
         self.current_acc = acc
+
+        # --- периодический отладочный лог ----------------------------------
+        # Показывает, что происходит с курсом при стоящем роботе:
+        #   yaw     — текущий курс из /odom и /imu/data;
+        #   mag_yaw — магнитный курс (что хочет компас);
+        #   diff    — расхождение (если большое и НЕ убывает — фильтр крутит
+        #              yaw, либо компас/уровень «едет»);
+        #   roll/pitch — уровень от EKF (если ~±90/180° — EKF перевёрнут,
+        #              tilt-компенсация компаса даёт ерунду);
+        #   gyroZ   — гироскоп после дрейф-компенсации (должен быть ~0);
+        #   |M|     — модуль магнитного поля (стабилен?).
+        if self.debug_period_sec > 0.0:
+            now_t = time.time()
+            if now_t - self._last_debug_log >= self.debug_period_sec:
+                self._last_debug_log = now_t
+                roll, pitch, yaw = rpy_from_quat(self.q)
+                mag_yaw_deg = None
+                if self.imu.mag_type is not None and self.use_magnetometer:
+                    mag_yaw_deg = math.degrees(
+                        tilt_compensated_heading(roll, pitch, mag))
+                if mag_yaw_deg is not None:
+                    diff_deg = math.degrees(wrap_angle(yaw - math.radians(mag_yaw_deg)))
+                    mag_txt = f"{mag_yaw_deg:+7.1f}° (diff={diff_deg:+6.1f}°)"
+                else:
+                    mag_txt = "нет"
+                origin_txt = ("нет" if self._yaw_origin is None
+                              else f"{math.degrees(self._yaw_origin):.1f}°")
+                self.get_logger().info(
+                    f"DBG yaw={math.degrees(yaw):+7.1f}° | mag_yaw={mag_txt} | "
+                    f"roll={math.degrees(roll):+6.1f}° pitch={math.degrees(pitch):+6.1f}° | "
+                    f"gyroZ={gyro[2] * 180.0 / math.pi:+6.2f}°/с | "
+                    f"|M|={np.linalg.norm(mag):5.0f} | origin={origin_txt}"
+                )
 
         # --- публикация /imu/data -----------------------------------------
         imu_msg = Imu()
