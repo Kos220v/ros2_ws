@@ -173,8 +173,12 @@ class OdomNode(Node):
         self.declare_parameter("mag_yaw_only", False)
         # Коэфф. комплементарного фильтра (на тик, откалиброван для 50 Гц).
         # При другой imu_rate нормируется в __init__ (постоянная времени
-        # фильтра не меняется).
+        # фильтра не меняется). Когда робот СТОИТ (гироскоп и скорость ~0),
+        # коэффициент автоматически умножается на mag_yaw_anchor_gain —
+        # курс жёстко привязывается к компасу (убирает «вращение на месте»).
         self.declare_parameter("mag_yaw_gain", 0.01)
+        # Усиление привязки к компасу в покое (множитель к mag_yaw_gain).
+        self.declare_parameter("mag_yaw_anchor_gain", 10.0)
         # Зона нечувствительности (град): не подтягивать yaw к магнитному
         # курсу, если расхождение меньше порога. Убирает джиттер от шума
         # магнитометра (моторы/лидар рядом), сохраняя отслеживание поворотов.
@@ -266,6 +270,7 @@ class OdomNode(Node):
         self.mag_z_invert = bool(self.get_parameter("mag_z_invert").value)
         self.mag_yaw_only = bool(self.get_parameter("mag_yaw_only").value)
         self.mag_yaw_gain = float(self.get_parameter("mag_yaw_gain").value)
+        self.mag_yaw_anchor_gain = float(self.get_parameter("mag_yaw_anchor_gain").value)
         self.mag_yaw_deadzone_deg = float(self.get_parameter("mag_yaw_deadzone_deg").value)
         # Комплементарный фильтр курса: mag_yaw_gain откалиброван для 50 Гц.
         # Масштабируем пo-тиковый коэффициент так, чтобы постоянная времени
@@ -483,6 +488,7 @@ class OdomNode(Node):
         self.prev_yaw_wheel = None   # для twist при yaw_source='wheel'
         self._last_imu_time = None   # для измерения реального dt между тиками
         self._acc_lp = None          # низкочастотный фильтр acc (для yaw_source='mag')
+        self._yaw_int = 0.0          # собственная интеграция курса (рад)
 
     # --- статические TF датчиков ------------------------------------------
 
@@ -540,6 +546,7 @@ class OdomNode(Node):
         # Пока робот неподвижен, усредняем gyro[2] — это остаточный дрейф
         # (после стартовой калибровки он ~1°/с и меняется с температурой).
         # Вычитаем его до EKF, чтобы yaw не «уезжал».
+        gyro_raw = gyro.copy()   # сырые показания (для DBG-диагностики)
         if self.drift_compensation:
             moving = (abs(gyro[2]) > self.drift_move_threshold
                       or self.current_speed > 0.05)
@@ -578,42 +585,18 @@ class OdomNode(Node):
             else:
                 self._update_yaw_from_mag(acc, mag)
         else:
-            # Магнитометра нет/выключен/yaw-only — передаём None, а не нулевой вектор
-            mag_arg = mag if self._mag_full else None
-            try:
-                self.q = self.ekf.update(self.q, gyro, acc, mag_arg, dt=dt)
-            except ValueError as e:
-                self.get_logger().warning(f"Пропуск обновления EKF: {e}")
-
-            # Режим «только курс»: уровень уже получен от EKF (acc+gyro) без маг.
-            # Теперь подтягиваем yaw к магнитному курсу комплементарным фильтром,
-            # чтобы компас не влиял на roll/pitch вообще. Зона нечувствительности
-            # отсекает шум магнитометра (иначе yaw дёргается на ровном месте).
-            if self.mag_yaw_only and self.use_magnetometer and self.imu.mag_type is not None:
-                roll, pitch, _ = rpy_from_quat(self.q)
-                yaw_mag = tilt_compensated_heading(roll, pitch, mag)
-                yaw_now = self._quat_yaw(self.q)
-                diff = wrap_angle(yaw_mag - yaw_now)
-                if abs(math.degrees(diff)) > self.mag_yaw_deadzone_deg:
-                    yaw_fused = yaw_now + self.mag_yaw_gain_eff * diff
-                    self.q = quat_wxyz_from_rpy(roll, pitch, yaw_fused)
-
-            # Фиксированная поправка курса (компенсация остаточного смещения yaw)
-            if self.yaw_bias_deg:
-                roll, pitch, yaw = rpy_from_quat(self.q)
-                yaw = wrap_angle(yaw + math.radians(self.yaw_bias_deg))
-                self.q = quat_wxyz_from_rpy(roll, pitch, yaw)
-
-            # Экспоненциальное сглаживание курса (убирает джиттер от шума
-            # гироскопа/магнитометра; yaw становится плавным, но чуть инертным)
-            if self.yaw_smoothing > 0.0:
-                roll, pitch, yaw = rpy_from_quat(self.q)
-                if self._yaw_smoothed is None:
-                    self._yaw_smoothed = yaw
-                else:
-                    self._yaw_smoothed = self._yaw_smoothed + \
-                        self.yaw_smoothing * wrap_angle(yaw - self._yaw_smoothed)
-                self.q = quat_wxyz_from_rpy(roll, pitch, self._yaw_smoothed)
+            # Собственный контур слияния курса (БЕЗ ahrs EKF):
+            #   * уровень (roll/pitch) — из низкочастотно-фильтрованного
+            #     акселерометра;
+            #   * yaw — интеграция гироскопа (после дрейф-компенсации) +
+            #     комплементарная коррекция магнитным курсом (с якорем в покое).
+            # Почему не ahrs EKF: его калмановская коррекция действует на
+            # ПОЛНЫЙ кватернион (q = q_t + K@v), и любые наши внешние правки
+            # yaw (якорь, вычитание origin) ломают его ковариацию — фильтр
+            # начинает систематически «подмешивать» поворот в yaw (робот
+            # стоит, а курс вращается). Свой контур детерминирован и не
+            # зависит от поведения библиотеки.
+            self._update_yaw_fused(acc, gyro, mag, dt)
 
         # --- привязка курса к стартовой ориентации робота -------------------
         # Компас даёт АБСОЛЮТНЫЙ курс (магнитный север/ENU). Если его не
@@ -673,6 +656,18 @@ class OdomNode(Node):
                     f"gyroZ={gyro[2] * 180.0 / math.pi:+6.2f}°/с | "
                     f"|M|={np.linalg.norm(mag):5.0f} | origin={origin_txt}"
                 )
+                # Сырые показания гироскопа (до дрейф-компенсации) — если они
+                # «скачут»/ненулевые при стоящем роботе — конфликт I2C
+                # (второй процесс читает MPU6050/QMC5883L, например
+                # compass_control) или плохая калибровка.
+                self.get_logger().info(
+                    f"DBG raw_gyro X={gyro_raw[0] * 180.0 / math.pi:+6.2f} "
+                    f"Y={gyro_raw[1] * 180.0 / math.pi:+6.2f} "
+                    f"Z={gyro_raw[2] * 180.0 / math.pi:+6.2f} °/с | "
+                    f"drift_z={self._drift_z * 180.0 / math.pi:+6.2f} °/с | "
+                    f"speed={self.current_speed:.2f} м/с | "
+                    f"anchor={'да' if (abs(gyro[2]) < self.drift_move_threshold and self.current_speed < 0.05) else 'нет'}"
+                )
 
         # --- публикация /imu/data -----------------------------------------
         imu_msg = Imu()
@@ -688,6 +683,61 @@ class OdomNode(Node):
         imu_msg.linear_acceleration.z = acc[2]
 
         self.pub_imu.publish(imu_msg)
+
+    def _update_yaw_fused(self, acc, gyro, mag, dt):
+        """Собственный контур курса: акселерометр (уровень) + гироскоп
+        (интеграция yaw) + компас (комплементарная коррекция).
+
+        Полностью заменяет ahrs EKF в контуре курса — детерминирован,
+        не зависит от версии библиотеки и не «вращает» yaw при стоящем
+        роботе (в покое якорь жёстко привязывает курс к компасу).
+        """
+        # --- уровень из акселерометра (низкочастотный фильтр) ---
+        if self._acc_lp is None:
+            self._acc_lp = acc.copy()
+        else:
+            a = 0.2   # ~0.4 c при 25 Гц
+            self._acc_lp = a * acc + (1.0 - a) * self._acc_lp
+        a = self._acc_lp
+        norm = np.linalg.norm(a)
+        if norm > 1e-6:
+            # acc_invert применён в драйвере: плашмя -> (0,0,-9.81)
+            pitch = math.asin(max(-1.0, min(1.0, a[0] / norm)))
+            roll = math.atan2(-a[1], -a[2])
+        else:
+            roll = pitch = 0.0
+
+        # --- интеграция yaw из гироскопа (после дрейф-компенсации) ---
+        if dt is None:
+            dt = 1.0 / self.imu_rate
+        self._yaw_int = wrap_angle(self._yaw_int + gyro[2] * dt)
+
+        # --- комплементарная коррекция магнитным курсом ---
+        # Зона нечувствительности отсекает шум магнитометра; в покое
+        # («якорь») курс жёстко привязывается к компасу.
+        if self.use_magnetometer and self.imu.mag_type is not None:
+            yaw_mag = tilt_compensated_heading(roll, pitch, mag)
+            diff = wrap_angle(yaw_mag - self._yaw_int)
+            if abs(math.degrees(diff)) > self.mag_yaw_deadzone_deg:
+                gain = self.mag_yaw_gain_eff
+                if (abs(gyro[2]) < self.drift_move_threshold
+                        and self.current_speed < 0.05):
+                    gain = min(1.0, gain * self.mag_yaw_anchor_gain)
+                self._yaw_int = wrap_angle(self._yaw_int + gain * diff)
+
+        # --- фиксированная поправка и сглаживание курса ---
+        if self.yaw_bias_deg:
+            self._yaw_int = wrap_angle(
+                self._yaw_int + math.radians(self.yaw_bias_deg))
+        if self.yaw_smoothing > 0.0:
+            if self._yaw_smoothed is None:
+                self._yaw_smoothed = self._yaw_int
+            else:
+                self._yaw_smoothed = self._yaw_smoothed + \
+                    self.yaw_smoothing * wrap_angle(self._yaw_int - self._yaw_smoothed)
+            self._yaw_int = self._yaw_smoothed
+
+        self.q = quat_wxyz_from_rpy(roll, pitch, self._yaw_int)
 
     def _update_yaw_from_mag(self, acc, mag):
         """Курс ТОЛЬКО от магнитометра (с компенсацией наклона).
@@ -774,6 +824,7 @@ class OdomNode(Node):
                 yaw = self.current_yaw
             roll, pitch, _ = rpy_from_quat(self.q)
             self.q = quat_wxyz_from_rpy(roll, pitch, yaw)
+            self._yaw_int = yaw   # синхронизация с собственным контуром
         else:
             yaw = self.current_yaw
 
