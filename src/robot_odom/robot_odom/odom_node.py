@@ -19,6 +19,8 @@ ROS 2 нода одометрии и IMU для робота на базе Raspb
 Публикации:
   * /imu/data  (sensor_msgs/Imu)   — ориентация, угловая скорость, ускорение
   * /odom      (nav_msgs/Odometry) — позиция из joint_states + курс от EKF
+                                     (гироскоп+акселерометр; при включённом
+                                     магнитометре — с магнитной коррекцией yaw)
   * TF odom -> base_link (если publish_tf := true)
 
 Подписки:
@@ -135,7 +137,10 @@ class OdomNode(Node):
         self.declare_parameter("robot_y_joint", "robot_y")
         # Источник yaw для /odom:
         #   'imu'   — курс от EKF (гироскоп+акселерометр) — ОСНОВНОЙ,
-        #             отслеживает повороты; дрейф мал при чистой калибровке;
+        #             отслеживает повороты; дрейф мал при чистой калибровке.
+        #             При use_magnetometer=true курс дополнительно подтягивается
+        #             к магнитному курсу компаса (комплементарный фильтр,
+        #             см. mag_yaw_only) — компас + инерциальный модуль;
         #   'wheel' — колёсный курс из joint_states (robot_yaw_joint);
         #   'mag'   — курс ТОЛЬКО от магнитометра (может «залипать»).
         self.declare_parameter("robot_yaw_joint", "robot_yaw")
@@ -150,8 +155,11 @@ class OdomNode(Node):
         # измеряется утилитой imu_check --heading. Компас — отдельный датчик.
         self.declare_parameter("mag_yaw_offset_deg", 0.0)
         # Диагностика/фикс перевёрнутой ориентации (Z вниз в RViz):
-        # use_magnetometer=false — отключить компас (по умолчанию выключен:
-        # в монтаже робота компас «залипает» — не отслеживает повороты);
+        # use_magnetometer=true — включить компас. В связке с mag_yaw_only=true
+        # курс /odom = слияние гироскопа (динамика поворотов) и магнитного
+        # курса (абсолютная привязка к северу): чистый компас «залипает»
+        # (не отслеживает повороты), поэтому используется комплементарный
+        # фильтр, а НЕ yaw_source='mag';
         # mag_z_invert=true — инвертировать ось Z магнитометра (QMC выдаёт
         # mz «вниз» в стиле NED, а ENU-модель ahrs ожидает mz «вверх»).
         self.declare_parameter("use_magnetometer", False)
@@ -161,7 +169,10 @@ class OdomNode(Node):
         # Нужен, когда полный 3D-вектор магнитометра портит уровень
         # (hard-iron от моторов, перекос осей компаса, робота нельзя вращать).
         self.declare_parameter("mag_yaw_only", False)
-        self.declare_parameter("mag_yaw_gain", 0.01)   # коэфф. компл. фильтра (на тик, 50 Гц)
+        # Коэфф. комплементарного фильтра (на тик, откалиброван для 50 Гц).
+        # При другой imu_rate нормируется в __init__ (постоянная времени
+        # фильтра не меняется).
+        self.declare_parameter("mag_yaw_gain", 0.01)
         # Зона нечувствительности (град): не подтягивать yaw к магнитному
         # курсу, если расхождение меньше порога. Убирает джиттер от шума
         # магнитометра (моторы/лидар рядом), сохраняя отслеживание поворотов.
@@ -241,6 +252,12 @@ class OdomNode(Node):
         self.mag_yaw_only = bool(self.get_parameter("mag_yaw_only").value)
         self.mag_yaw_gain = float(self.get_parameter("mag_yaw_gain").value)
         self.mag_yaw_deadzone_deg = float(self.get_parameter("mag_yaw_deadzone_deg").value)
+        # Комплементарный фильтр курса: mag_yaw_gain откалиброван для 50 Гц.
+        # Масштабируем пo-тиковый коэффициент так, чтобы постоянная времени
+        # фильтра (отклик на расхождение курса) не зависела от imu_rate:
+        #   tau = 1 / (gain_eff * imu_rate) = 1 / (mag_yaw_gain * 50) = const.
+        self.mag_yaw_gain_eff = min(
+            1.0, self.mag_yaw_gain * (50.0 / max(float(self.imu_rate), 1.0)))
         self.yaw_bias_deg = float(self.get_parameter("yaw_bias_deg").value)
         self.drift_compensation = bool(self.get_parameter("drift_compensation").value)
         self.drift_move_threshold = float(self.get_parameter("drift_move_threshold").value)
@@ -307,8 +324,15 @@ class OdomNode(Node):
         )
         if self.imu.mag_type is None:
             self.get_logger().info("Магнитометр: не найден")
+            if self.use_magnetometer:
+                self.get_logger().warning(
+                    "use_magnetometer=true, но магнитометр недоступен — курс "
+                    "будет только от гироскопа (дрейф yaw останется). "
+                    "Проверьте компас на шине: i2cdetect -y 1 "
+                    "(QMC5883L=0x0D, HMC5883L=0x1E)"
+                )
         else:
-            mode = "yaw-only" if self.mag_yaw_only else "используется"
+            mode = "yaw-only (компас+гироскоп)" if self.mag_yaw_only else "используется"
             if not self.use_magnetometer:
                 mode = "ОТКЛЮЧЁН — только acc+gyro"
             self.get_logger().info(
@@ -322,6 +346,8 @@ class OdomNode(Node):
         self.get_logger().info(
             f"IMU-конфигурация: acc_invert={'ДА' if self.acc_invert else 'нет'} | "
             f"use_magnetometer={'да' if self.use_magnetometer else 'нет'} | "
+            f"mag_yaw_only={'да' if self.mag_yaw_only else 'нет'} | "
+            f"mag_yaw_gain_eff={self.mag_yaw_gain_eff:g} | "
             f"ekf_frame={self.ekf_frame} | "
             f"mount=({self.mount_roll:g},{self.mount_pitch:g},{self.mount_yaw:g})° | "
             f"yaw_bias={self.yaw_bias_deg:g}° | "
@@ -506,7 +532,7 @@ class OdomNode(Node):
                 yaw_now = self._quat_yaw(self.q)
                 diff = wrap_angle(yaw_mag - yaw_now)
                 if abs(math.degrees(diff)) > self.mag_yaw_deadzone_deg:
-                    yaw_fused = yaw_now + self.mag_yaw_gain * diff
+                    yaw_fused = yaw_now + self.mag_yaw_gain_eff * diff
                     self.q = quat_wxyz_from_rpy(roll, pitch, yaw_fused)
 
             # Фиксированная поправка курса (компенсация остаточного смещения yaw)
