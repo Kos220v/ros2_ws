@@ -1,0 +1,46 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+    - Class: rviz_default_plugins/LaserScan
+      Name: LaserScan
+      Topic: /scan
+      Queue Size: 10
+      Reliability Policy: Best Effort  # Ключевая строка!
+      Durability Policy: Volatile      # Ключевая строка!
+      Color: 255; 0; 0
+      Alpha: 1.0
+      Size: 0.05
+      Style: Points
+      Enabled: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: PointCloud2
+      Topic: /point_cloud
+      Queue Size: 10
+      Reliability Policy: Best Effort  # Ключевая строка!
+      Durability Policy: Volatile      # Ключевая строка!
+      Color Transformer: AxisColor
+      Size (m): 0.03
+      Alpha: 1.0
+      Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Name: TF
+  Global Options:
+    Fixed Frame: laser
+    Background Color: 48; 48; 48
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 5
+      Pitch: 0.785398
+      Yaw: 0.785398
+Window Geometry:
+  Height: 800
+  Width: 1200
