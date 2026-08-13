@@ -192,8 +192,11 @@ class HardwareIMU:
             self.bus.read_byte_data(0x0D, 0x00)
             self.mag_addr = 0x0D
             self.mag_type = 'QMC'
-            # Control Register 1 (0x09) = 0x1D: continuous mode, 50 Гц, ±8G, OSR=512
+            # Control Register 1 (0x09) = 0x1D: OSR=512, RNG=8G, ODR=50Hz
             self.bus.write_byte_data(self.mag_addr, 0x09, 0x1D)
+            # Control Register 2 (0x0A) = 0x01: непрерывный режим (continuous)
+            self.bus.write_byte_data(self.mag_addr, 0x0A, 0x01)
+            time.sleep(0.01)   # дать датчику время на первый замер
             return
         except Exception:
             pass

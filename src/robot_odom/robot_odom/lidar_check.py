@@ -2,28 +2,28 @@
 # -*- coding: utf-8 -*-
 
 """
-Диагностика YDLidar: ошибка драйвера
+Р”РёР°РіРЅРѕСЃС‚РёРєР° YDLidar: РѕС€РёР±РєР° РґСЂР°Р№РІРµСЂР°
     "Fail to get baseplate device information!"
 
-Что это значит: SDK лидара не смог прочитать информацию с платы датчика
-(базы) через serial-порт — т.е. связи с лидаром НЕТ. Причины (по частоте):
+Р§С‚Рѕ СЌС‚Рѕ Р·РЅР°С‡РёС‚: SDK Р»РёРґР°СЂР° РЅРµ СЃРјРѕРі РїСЂРѕС‡РёС‚Р°С‚СЊ РёРЅС„РѕСЂРјР°С†РёСЋ СЃ РїР»Р°С‚С‹ РґР°С‚С‡РёРєР°
+(Р±Р°Р·С‹) С‡РµСЂРµР· serial-РїРѕСЂС‚ вЂ” С‚.Рµ. СЃРІСЏР·Рё СЃ Р»РёРґР°СЂРѕРј РќР•Рў. РџСЂРёС‡РёРЅС‹ (РїРѕ С‡Р°СЃС‚РѕС‚Рµ):
 
-  1. Неверный/отсутствующий порт в params драйвера (port: /dev/ttyUSB0),
-     а у лидара другой (ttyUSB1, ttyACM0) или его вообще нет (USB не
-     поднялся / не подключён / не запитался).
-  2. Нет прав на порт: пользователь не в группе dialout (или udev-правило
-     не даёт MODE="0666").
-  3. Порт занят другим процессом (GPS на том же USB-адаптере, второй
-     экземпляр драйвера, ModemManager).
-  4. Питание лидара: не горит LED, мотор не крутится (хаб/USB-порт без
-     достаточного тока, разъём).
-  5. Несовпадение модели/скорости в params (baudrate 115200 для X2/X4;
-     128000 для некоторых G-серий; lidar_type: 0 для serial).
+  1. РќРµРІРµСЂРЅС‹Р№/РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‰РёР№ РїРѕСЂС‚ РІ params РґСЂР°Р№РІРµСЂР° (port: /dev/ttyUSB0),
+     Р° Сѓ Р»РёРґР°СЂР° РґСЂСѓРіРѕР№ (ttyUSB1, ttyACM0) РёР»Рё РµРіРѕ РІРѕРѕР±С‰Рµ РЅРµС‚ (USB РЅРµ
+     РїРѕРґРЅСЏР»СЃСЏ / РЅРµ РїРѕРґРєР»СЋС‡С‘РЅ / РЅРµ Р·Р°РїРёС‚Р°Р»СЃСЏ).
+  2. РќРµС‚ РїСЂР°РІ РЅР° РїРѕСЂС‚: РїРѕР»СЊР·РѕРІР°С‚РµР»СЊ РЅРµ РІ РіСЂСѓРїРїРµ dialout (РёР»Рё udev-РїСЂР°РІРёР»Рѕ
+     РЅРµ РґР°С‘С‚ MODE="0666").
+  3. РџРѕСЂС‚ Р·Р°РЅСЏС‚ РґСЂСѓРіРёРј РїСЂРѕС†РµСЃСЃРѕРј (GPS РЅР° С‚РѕРј Р¶Рµ USB-Р°РґР°РїС‚РµСЂРµ, РІС‚РѕСЂРѕР№
+     СЌРєР·РµРјРїР»СЏСЂ РґСЂР°Р№РІРµСЂР°, ModemManager).
+  4. РџРёС‚Р°РЅРёРµ Р»РёРґР°СЂР°: РЅРµ РіРѕСЂРёС‚ LED, РјРѕС‚РѕСЂ РЅРµ РєСЂСѓС‚РёС‚СЃСЏ (С…Р°Р±/USB-РїРѕСЂС‚ Р±РµР·
+     РґРѕСЃС‚Р°С‚РѕС‡РЅРѕРіРѕ С‚РѕРєР°, СЂР°Р·СЉС‘Рј).
+  5. РќРµСЃРѕРІРїР°РґРµРЅРёРµ РјРѕРґРµР»Рё/СЃРєРѕСЂРѕСЃС‚Рё РІ params (baudrate 115200 РґР»СЏ X2/X4;
+     128000 РґР»СЏ РЅРµРєРѕС‚РѕСЂС‹С… G-СЃРµСЂРёР№; lidar_type: 0 РґР»СЏ serial).
 
-Запуск:
+Р—Р°РїСѓСЃРє:
     ros2 run robot_odom lidar_check
-    ros2 run robot_odom lidar_check --probe   # попытаться «постучаться»
-                                              # в каждый порт на 115200
+    ros2 run robot_odom lidar_check --probe   # РїРѕРїС‹С‚Р°С‚СЊСЃСЏ В«РїРѕСЃС‚СѓС‡Р°С‚СЊСЃСЏВ»
+                                              # РІ РєР°Р¶РґС‹Р№ РїРѕСЂС‚ РЅР° 115200
 """
 
 import argparse
@@ -46,35 +46,35 @@ def find_candidates():
     found = []
     for pattern in LIDAR_PATTERNS:
         found.extend(sorted(glob.glob(pattern)))
-    # дедупликация с сохранением порядка
+    # РґРµРґСѓРїР»РёРєР°С†РёСЏ СЃ СЃРѕС…СЂР°РЅРµРЅРёРµРј РїРѕСЂСЏРґРєР°
     return list(dict.fromkeys(found))
 
 
 def check_port(port):
-    """Возвращает (ok, проблемы, инфо)."""
+    """Р’РѕР·РІСЂР°С‰Р°РµС‚ (ok, РїСЂРѕР±Р»РµРјС‹, РёРЅС„Рѕ)."""
     problems = []
     info = []
     if not os.path.exists(port):
-        return False, [f"{port} НЕ существует"], []
+        return False, [f"{port} РќР• СЃСѓС‰РµСЃС‚РІСѓРµС‚"], []
     st = os.stat(port)
     import stat as st_mod
     mode = st_mod.filemode(st.st_mode)
     info.append(f"{port}: {mode}")
-    # права: группа dialout / uucp / tty / other-w
+    # РїСЂР°РІР°: РіСЂСѓРїРїР° dialout / uucp / tty / other-w
     if not (st.st_mode & 0o002):
         problems.append(
-            f"{port}: нет доступа для остальных (нет o+w). "
-            "Добавьте себя в группу dialout: sudo usermod -aG dialout $USER "
-            "(перелогиниться) или установите udev-правило MODE=\"0666\"."
+            f"{port}: РЅРµС‚ РґРѕСЃС‚СѓРїР° РґР»СЏ РѕСЃС‚Р°Р»СЊРЅС‹С… (РЅРµС‚ o+w). "
+            "Р”РѕР±Р°РІСЊС‚Рµ СЃРµР±СЏ РІ РіСЂСѓРїРїСѓ dialout: sudo usermod -aG dialout $USER "
+            "(РїРµСЂРµР»РѕРіРёРЅРёС‚СЊСЃСЏ) РёР»Рё СѓСЃС‚Р°РЅРѕРІРёС‚Рµ udev-РїСЂР°РІРёР»Рѕ MODE=\"0666\"."
         )
-    # занят ли порт другим процессом
+    # Р·Р°РЅСЏС‚ Р»Рё РїРѕСЂС‚ РґСЂСѓРіРёРј РїСЂРѕС†РµСЃСЃРѕРј
     try:
         out = subprocess.run(
             ['fuser', '-v', port], capture_output=True, text=True, timeout=3)
         if out.returncode == 0:
             problems.append(
-                f"{port}: ЗАНЯТ другим процессом:\n{out.stderr.strip()}\n"
-                "Убейте процесс (или найдите, кто держит порт): "
+                f"{port}: Р—РђРќРЇРў РґСЂСѓРіРёРј РїСЂРѕС†РµСЃСЃРѕРј:\n{out.stderr.strip()}\n"
+                "РЈР±РµР№С‚Рµ РїСЂРѕС†РµСЃСЃ (РёР»Рё РЅР°Р№РґРёС‚Рµ, РєС‚Рѕ РґРµСЂР¶РёС‚ РїРѕСЂС‚): "
                 "sudo lsof " + port
             )
     except FileNotFoundError:
@@ -85,7 +85,7 @@ def check_port(port):
 
 
 def probe_port(port, baud, timeout=0.6):
-    """Пытается открыть порт и прочитать что-нибудь (сырой тест связи)."""
+    """РџС‹С‚Р°РµС‚СЃСЏ РѕС‚РєСЂС‹С‚СЊ РїРѕСЂС‚ Рё РїСЂРѕС‡РёС‚Р°С‚СЊ С‡С‚Рѕ-РЅРёР±СѓРґСЊ (СЃС‹СЂРѕР№ С‚РµСЃС‚ СЃРІСЏР·Рё)."""
     try:
         import serial
     except ImportError:
@@ -95,102 +95,102 @@ def probe_port(port, baud, timeout=0.6):
             s.reset_input_buffer()
             data = s.read(32)
             if data:
-                return f'OK: получено {len(data)} байт (первые: {data[:8].hex()})'
-            return ('тишина (порт открылся, но данных нет — это нормально, '
-                    'лидар отвечает только на команды)')
+                return f'OK: РїРѕР»СѓС‡РµРЅРѕ {len(data)} Р±Р°Р№С‚ (РїРµСЂРІС‹Рµ: {data[:8].hex()})'
+            return ('С‚РёС€РёРЅР° (РїРѕСЂС‚ РѕС‚РєСЂС‹Р»СЃСЏ, РЅРѕ РґР°РЅРЅС‹С… РЅРµС‚ вЂ” СЌС‚Рѕ РЅРѕСЂРјР°Р»СЊРЅРѕ, '
+                    'Р»РёРґР°СЂ РѕС‚РІРµС‡Р°РµС‚ С‚РѕР»СЊРєРѕ РЅР° РєРѕРјР°РЅРґС‹)')
     except Exception as e:
-        return f'ОШИБКА: {e}'
+        return f'РћРЁРР‘РљРђ: {e}'
 
 
 def udev_hint():
     print()
-    print("Рекомендуемое udev-правило для лидара "
-          "(создать /etc/udev/rules.d/99-ydlidar.rules):")
+    print("Р РµРєРѕРјРµРЅРґСѓРµРјРѕРµ udev-РїСЂР°РІРёР»Рѕ РґР»СЏ Р»РёРґР°СЂР° "
+          "(СЃРѕР·РґР°С‚СЊ /etc/udev/rules.d/99-ydlidar.rules):")
     print("    KERNEL==\"ttyUSB*\", MODE=\"0666\"")
     print("    KERNEL==\"ttyACM*\", MODE=\"0666\"")
     print("    KERNEL==\"ttyUSB*\", ATTRS{idVendor}==\"10c4\", "
           "ATTRS{idProduct}==\"ea60\", SYMLINK+=\"ydlidar\", MODE=\"0666\"")
-    print("  (idVendor/idProduct посмотрите: lsusb | grep -i -E 'cp210|silicon|10c4')")
-    print("  Затем: sudo udevadm control --reload-rules && "
+    print("  (idVendor/idProduct РїРѕСЃРјРѕС‚СЂРёС‚Рµ: lsusb | grep -i -E 'cp210|silicon|10c4')")
+    print("  Р—Р°С‚РµРј: sudo udevadm control --reload-rules && "
           "sudo udevadm trigger")
     print()
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Диагностика YDLidar')
+    ap = argparse.ArgumentParser(description='Р”РёР°РіРЅРѕСЃС‚РёРєР° YDLidar')
     ap.add_argument('--probe', action='store_true',
-                    help='открыть каждый найденный порт и попытаться прочитать')
+                    help='РѕС‚РєСЂС‹С‚СЊ РєР°Р¶РґС‹Р№ РЅР°Р№РґРµРЅРЅС‹Р№ РїРѕСЂС‚ Рё РїРѕРїС‹С‚Р°С‚СЊСЃСЏ РїСЂРѕС‡РёС‚Р°С‚СЊ')
     args = ap.parse_args()
 
-    print("=== Диагностика YDLidar: 'Fail to get baseplate device information!' ===\n")
+    print("=== Р”РёР°РіРЅРѕСЃС‚РёРєР° YDLidar: 'Fail to get baseplate device information!' ===\n")
 
-    # 1. USB-устройства
+    # 1. USB-СѓСЃС‚СЂРѕР№СЃС‚РІР°
     print("--- USB (lsusb) ---")
     try:
         out = subprocess.run(['lsusb'], capture_output=True, text=True, timeout=5)
         for line in out.stdout.splitlines():
             if any(k in line.lower() for k in ('cp210', 'silicon', 'ftdi', 'ch340',
                                                '10c4', '1a86', '0403')):
-                print("  [похоже на USB-UART/лидар]", line)
+                print("  [РїРѕС…РѕР¶Рµ РЅР° USB-UART/Р»РёРґР°СЂ]", line)
             else:
                 print("  ", line)
     except Exception as e:
-        print(f"  lsusb недоступен: {e}")
+        print(f"  lsusb РЅРµРґРѕСЃС‚СѓРїРµРЅ: {e}")
 
-    # 2. Кандидаты-порты
+    # 2. РљР°РЅРґРёРґР°С‚С‹-РїРѕСЂС‚С‹
     cands = find_candidates()
-    print(f"\n--- Порты-кандидаты ({len(cands)}) ---")
+    print(f"\n--- РџРѕСЂС‚С‹-РєР°РЅРґРёРґР°С‚С‹ ({len(cands)}) ---")
     if not cands:
-        print("  НЕТ /dev/ttyUSB* и /dev/ttyACM*!")
-        print("  Проверьте: 1) лидар подключён и запитался (LED горит, мотор "
-              "крутится);")
-        print("  2) USB виден: dmesg | tail -30  (после подключения);")
-        print("  3) кабель/разъём/хаб.")
+        print("  РќР•Рў /dev/ttyUSB* Рё /dev/ttyACM*!")
+        print("  РџСЂРѕРІРµСЂСЊС‚Рµ: 1) Р»РёРґР°СЂ РїРѕРґРєР»СЋС‡С‘РЅ Рё Р·Р°РїРёС‚Р°Р»СЃСЏ (LED РіРѕСЂРёС‚, РјРѕС‚РѕСЂ "
+              "РєСЂСѓС‚РёС‚СЃСЏ);")
+        print("  2) USB РІРёРґРµРЅ: dmesg | tail -30  (РїРѕСЃР»Рµ РїРѕРґРєР»СЋС‡РµРЅРёСЏ);")
+        print("  3) РєР°Р±РµР»СЊ/СЂР°Р·СЉС‘Рј/С…Р°Р±.")
     problems_total = 0
     for p in cands:
         ok, problems, info = check_port(p)
         for i in info:
             print(" ", i)
         if not ok:
-            print(f"  ? {p} НЕ существует")
+            print(f"  ? {p} РќР• СЃСѓС‰РµСЃС‚РІСѓРµС‚")
         for pr in problems:
             print("  ?", pr)
             problems_total += 1
 
-    # 3. Проверка группы dialout
-    print("\n--- Права доступа ---")
+    # 3. РџСЂРѕРІРµСЂРєР° РіСЂСѓРїРїС‹ dialout
+    print("\n--- РџСЂР°РІР° РґРѕСЃС‚СѓРїР° ---")
     try:
         groups = subprocess.run(['groups'], capture_output=True, text=True).stdout
-        print(f"  Ваши группы: {groups.strip()}")
+        print(f"  Р’Р°С€Рё РіСЂСѓРїРїС‹: {groups.strip()}")
         if 'dialout' not in groups and 'uucp' not in groups:
-            print("  ? Нет группы dialout/uucp — вероятно, нет прав на порт.")
-            print("    Решение: sudo usermod -aG dialout $USER  (и перелогиниться)")
+            print("  ? РќРµС‚ РіСЂСѓРїРїС‹ dialout/uucp вЂ” РІРµСЂРѕСЏС‚РЅРѕ, РЅРµС‚ РїСЂР°РІ РЅР° РїРѕСЂС‚.")
+            print("    Р РµС€РµРЅРёРµ: sudo usermod -aG dialout $USER  (Рё РїРµСЂРµР»РѕРіРёРЅРёС‚СЊСЃСЏ)")
         else:
-            print("  ? Группа dialout/uucp есть.")
+            print("  ? Р“СЂСѓРїРїР° dialout/uucp РµСЃС‚СЊ.")
     except Exception as e:
-        print(f"  Не удалось проверить группы: {e}")
+        print(f"  РќРµ СѓРґР°Р»РѕСЃСЊ РїСЂРѕРІРµСЂРёС‚СЊ РіСЂСѓРїРїС‹: {e}")
 
-    # 4. Кто держит порты (lsof)
-    print("\n--- Кто держит порты ---")
+    # 4. РљС‚Рѕ РґРµСЂР¶РёС‚ РїРѕСЂС‚С‹ (lsof)
+    print("\n--- РљС‚Рѕ РґРµСЂР¶РёС‚ РїРѕСЂС‚С‹ ---")
     try:
         out = subprocess.run(['lsof', '+D', '/dev'], capture_output=True,
                              text=True, timeout=10)
         lines = [l for l in out.stdout.splitlines()
                  if 'ttyUSB' in l or 'ttyACM' in l]
         if lines:
-            print("  Найденные процессы на serial-портах:")
+            print("  РќР°Р№РґРµРЅРЅС‹Рµ РїСЂРѕС†РµСЃСЃС‹ РЅР° serial-РїРѕСЂС‚Р°С…:")
             for l in lines:
                 print("  ", l)
-            print("  Если порт лидара держит ДРУГОЙ процесс (GPS/второй "
-                  "драйвер) — освободите его.")
+            print("  Р•СЃР»Рё РїРѕСЂС‚ Р»РёРґР°СЂР° РґРµСЂР¶РёС‚ Р”Р РЈР“РћР™ РїСЂРѕС†РµСЃСЃ (GPS/РІС‚РѕСЂРѕР№ "
+                  "РґСЂР°Р№РІРµСЂ) вЂ” РѕСЃРІРѕР±РѕРґРёС‚Рµ РµРіРѕ.")
         else:
-            print("  Свободны (lsof не показал держателей ttyUSB/ttyACM).")
+            print("  РЎРІРѕР±РѕРґРЅС‹ (lsof РЅРµ РїРѕРєР°Р·Р°Р» РґРµСЂР¶Р°С‚РµР»РµР№ ttyUSB/ttyACM).")
     except Exception as e:
-        print(f"  lsof недоступен: {e}")
+        print(f"  lsof РЅРµРґРѕСЃС‚СѓРїРµРЅ: {e}")
 
-    # 5. Опционально: probe
+    # 5. РћРїС†РёРѕРЅР°Р»СЊРЅРѕ: probe
     if args.probe:
-        print("\n--- Probe портов ---")
+        print("\n--- Probe РїРѕСЂС‚РѕРІ ---")
         for p in cands:
             if not os.path.exists(p):
                 continue
@@ -200,29 +200,29 @@ def main():
                 if r.startswith('OK'):
                     break
 
-    # 6. Где конфиг драйвера
-    print("\n--- Где искать/править конфиг драйвера ---")
-    print("  Параметры лидара (port, baudrate, lidar_type, frame_id) — в")
-    print("  params-файле установленного пакета ydlidar_ros2_driver:")
+    # 6. Р“РґРµ РєРѕРЅС„РёРі РґСЂР°Р№РІРµСЂР°
+    print("\n--- Р“РґРµ РёСЃРєР°С‚СЊ/РїСЂР°РІРёС‚СЊ РєРѕРЅС„РёРі РґСЂР°Р№РІРµСЂР° ---")
+    print("  РџР°СЂР°РјРµС‚СЂС‹ Р»РёРґР°СЂР° (port, baudrate, lidar_type, frame_id) вЂ” РІ")
+    print("  params-С„Р°Р№Р»Рµ СѓСЃС‚Р°РЅРѕРІР»РµРЅРЅРѕРіРѕ РїР°РєРµС‚Р° ydlidar_ros2_driver:")
     print("    ros2 pkg prefix ydlidar_ros2_driver")
-    print("  и посмотрите:  <prefix>/share/ydlidar_ros2_driver/params/ydlidar.yaml")
-    print("  Проверьте: port (должен совпадать с реальным), baudrate "
+    print("  Рё РїРѕСЃРјРѕС‚СЂРёС‚Рµ:  <prefix>/share/ydlidar_ros2_driver/params/ydlidar.yaml")
+    print("  РџСЂРѕРІРµСЂСЊС‚Рµ: port (РґРѕР»Р¶РµРЅ СЃРѕРІРїР°РґР°С‚СЊ СЃ СЂРµР°Р»СЊРЅС‹Рј), baudrate "
           "(X2/X4 = 115200), lidar_type (0 = serial).")
-    print("  Быстрый тест лидара отдельно от стека:")
+    print("  Р‘С‹СЃС‚СЂС‹Р№ С‚РµСЃС‚ Р»РёРґР°СЂР° РѕС‚РґРµР»СЊРЅРѕ РѕС‚ СЃС‚РµРєР°:")
     print("    ros2 launch ydlidar_ros2_driver ydlidar_launch.py")
-    print("  (если в одиночку работает — конфликт/порт в общем стеке).")
+    print("  (РµСЃР»Рё РІ РѕРґРёРЅРѕС‡РєСѓ СЂР°Р±РѕС‚Р°РµС‚ вЂ” РєРѕРЅС„Р»РёРєС‚/РїРѕСЂС‚ РІ РѕР±С‰РµРј СЃС‚РµРєРµ).")
 
     udev_hint()
 
-    print("=== Итог ===")
+    print("=== РС‚РѕРі ===")
     if problems_total:
-        print(f"  Найдено проблем: {problems_total}. Исправьте и повторите.")
+        print(f"  РќР°Р№РґРµРЅРѕ РїСЂРѕР±Р»РµРј: {problems_total}. РСЃРїСЂР°РІСЊС‚Рµ Рё РїРѕРІС‚РѕСЂРёС‚Рµ.")
     elif cands:
-        print("  Порты на месте, права в порядке, порты не заняты.")
-        print("  Если ошибка остаётся — проверьте ПИТАНИЕ лидара и"
-              " baudrate/модель в params драйвера.")
+        print("  РџРѕСЂС‚С‹ РЅР° РјРµСЃС‚Рµ, РїСЂР°РІР° РІ РїРѕСЂСЏРґРєРµ, РїРѕСЂС‚С‹ РЅРµ Р·Р°РЅСЏС‚С‹.")
+        print("  Р•СЃР»Рё РѕС€РёР±РєР° РѕСЃС‚Р°С‘С‚СЃСЏ вЂ” РїСЂРѕРІРµСЂСЊС‚Рµ РџРРўРђРќРР• Р»РёРґР°СЂР° Рё"
+              " baudrate/РјРѕРґРµР»СЊ РІ params РґСЂР°Р№РІРµСЂР°.")
     else:
-        print("  Порт лидара не найден — начинайте с USB/питания.")
+        print("  РџРѕСЂС‚ Р»РёРґР°СЂР° РЅРµ РЅР°Р№РґРµРЅ вЂ” РЅР°С‡РёРЅР°Р№С‚Рµ СЃ USB/РїРёС‚Р°РЅРёСЏ.")
     return 0 if problems_total == 0 else 2
 
 

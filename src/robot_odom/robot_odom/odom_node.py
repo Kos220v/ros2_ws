@@ -130,6 +130,26 @@ def tilt_compensated_heading(roll, pitch, mag):
     return math.pi / 2.0 - heading_cw_north
 
 
+def tilt_compensated_azimuth_deg(roll, pitch, mag):
+    """
+    Компасный АЗИМУТ (град, 0..360) с компенсацией наклона (roll/pitch).
+
+    Как компас телефона: 0° = север, 90° = восток, 180° = юг, 270° = запад
+    (по часовой стрелке от севера). Удобно сверять с телефоном/компасом
+    при проверке правильности работы магнитометра.
+
+    mag — вектор магнитометра в осях робота, уже выровненный
+    (rotate_xy + mag_z_invert применены в драйвере).
+    """
+    mx, my, mz = float(mag[0]), float(mag[1]), float(mag[2])
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cr, sr = math.cos(roll), math.sin(roll)
+    # Горизонтальные компоненты поля в осях тела (после проекции на горизонт):
+    xh = mx * cp + my * sr * sp + mz * cr * sp
+    yh = my * cr - mz * sr
+    return math.degrees(math.atan2(yh, xh)) % 360.0
+
+
 class OdomNode(Node):
     def __init__(self):
         super().__init__("odom_node")
@@ -627,12 +647,17 @@ class OdomNode(Node):
         # --- периодический отладочный лог ----------------------------------
         # Показывает, что происходит с курсом при стоящем роботе:
         #   yaw     — текущий курс из /odom и /imu/data;
-        #   mag_yaw — магнитный курс (что хочет компас);
+        #   azim    — КОМПАСНЫЙ АЗИМУТ (0..360°, по часовой от севера, как
+        #             компас телефона) — сверяйте с телефоном для проверки
+        #             правильности магнитометра;
+        #   mag_yaw — магнитный курс (ENU-конвенция, что хочет компас);
         #   diff    — расхождение (если большое и НЕ убывает — фильтр крутит
         #              yaw, либо компас/уровень «едет»);
         #   roll/pitch — уровень от EKF (если ~±90/180° — EKF перевёрнут,
         #              tilt-компенсация компаса даёт ерунду);
         #   gyroZ   — гироскоп после дрейф-компенсации (должен быть ~0);
+        #   MAG X/Y/Z — сырые компоненты магнитометра (для hard-iron
+        #              диагностики: смещение, размахи при повороте);
         #   |M|     — модуль магнитного поля (стабилен?).
         if self.debug_period_sec > 0.0:
             now_t = time.time()
@@ -640,34 +665,39 @@ class OdomNode(Node):
                 self._last_debug_log = now_t
                 roll, pitch, yaw = rpy_from_quat(self.q)
                 mag_yaw_deg = None
+                azim_deg = None
                 if self.imu.mag_type is not None and self.use_magnetometer:
                     mag_yaw_deg = math.degrees(
                         tilt_compensated_heading(roll, pitch, mag))
+                    azim_deg = tilt_compensated_azimuth_deg(roll, pitch, mag)
                 if mag_yaw_deg is not None:
                     diff_deg = math.degrees(wrap_angle(yaw - math.radians(mag_yaw_deg)))
                     mag_txt = f"{mag_yaw_deg:+7.1f}° (diff={diff_deg:+6.1f}°)"
                 else:
                     mag_txt = "нет"
+                azim_txt = (f"{azim_deg:6.1f}°" if azim_deg is not None else "нет")
                 origin_txt = ("нет" if self._yaw_origin is None
                               else f"{math.degrees(self._yaw_origin):.1f}°")
-                self.get_logger().info(
-                    f"DBG yaw={math.degrees(yaw):+7.1f}° | mag_yaw={mag_txt} | "
-                    f"roll={math.degrees(roll):+6.1f}° pitch={math.degrees(pitch):+6.1f}° | "
-                    f"gyroZ={gyro[2] * 180.0 / math.pi:+6.2f}°/с | "
-                    f"|M|={np.linalg.norm(mag):5.0f} | origin={origin_txt}"
-                )
+                #self.get_logger().info(
+                #    f"DBG yaw={math.degrees(yaw):+7.1f}° | "
+                #    f"azim={azim_txt} | mag_yaw={mag_txt} | "
+                #    f"roll={math.degrees(roll):+6.1f}° pitch={math.degrees(pitch):+6.1f}° | "
+                #    f"gyroZ={gyro[2] * 180.0 / math.pi:+6.2f}°/с | "
+                #    f"MAG X={mag[0]:.0f} Y={mag[1]:.0f} Z={mag[2]:.0f} | "
+                #    f"|M|={np.linalg.norm(mag):5.0f} | origin={origin_txt}"
+                #)
                 # Сырые показания гироскопа (до дрейф-компенсации) — если они
                 # «скачут»/ненулевые при стоящем роботе — конфликт I2C
                 # (второй процесс читает MPU6050/QMC5883L, например
                 # compass_control) или плохая калибровка.
-                self.get_logger().info(
-                    f"DBG raw_gyro X={gyro_raw[0] * 180.0 / math.pi:+6.2f} "
-                    f"Y={gyro_raw[1] * 180.0 / math.pi:+6.2f} "
-                    f"Z={gyro_raw[2] * 180.0 / math.pi:+6.2f} °/с | "
-                    f"drift_z={self._drift_z * 180.0 / math.pi:+6.2f} °/с | "
-                    f"speed={self.current_speed:.2f} м/с | "
-                    f"anchor={'да' if (abs(gyro[2]) < self.drift_move_threshold and self.current_speed < 0.05) else 'нет'}"
-                )
+                #self.get_logger().info(
+                #    f"DBG raw_gyro X={gyro_raw[0] * 180.0 / math.pi:+6.2f} "
+                #    f"Y={gyro_raw[1] * 180.0 / math.pi:+6.2f} "
+                #    f"Z={gyro_raw[2] * 180.0 / math.pi:+6.2f} °/с | "
+                #    f"drift_z={self._drift_z * 180.0 / math.pi:+6.2f} °/с | "
+                #    f"speed={self.current_speed:.2f} м/с | "
+                #    f"anchor={'да' if (abs(gyro[2]) < self.drift_move_threshold and self.current_speed < 0.05) else 'нет'}"
+                #)
 
         # --- публикация /imu/data -----------------------------------------
         imu_msg = Imu()
