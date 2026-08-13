@@ -73,9 +73,14 @@ class WaypointFollower(Node):
         self.declare_parameter('k_lin', 0.5)            # коэфф. скорости к цели
         self.declare_parameter('k_ang', 1.5)            # коэфф. поворота
         self.declare_parameter('max_angular', 1.0)      # рад/с — ОГРАНИЧЕНИЕ поворота
-        self.declare_parameter('yaw_tolerance_deg', 10.0)  # порог поворота перед движением
-        self.declare_parameter('turn_correct_deg', 5.0)  # жёсткая коррекция курса: при
-                                                         # |err|>5° стоп + разворот к цели
+        # GPS и магнитный курс на малой платформе имеют шум. Не останавливаем
+        # робота из-за ошибки в несколько градусов: в этой зоне он едет и
+        # плавно доворачивает курс.
+        self.declare_parameter('yaw_tolerance_deg', 25.0)
+        # Дополнительная жёсткая остановка для точного наведения. 0 отключает
+        # её (безопасный режим по умолчанию), иначе робот может бесконечно
+        # вращаться при шумном GPS/магнитометре.
+        self.declare_parameter('turn_correct_deg', 0.0)
         self.declare_parameter('stop_dist', 1.0)        # тормозим за N метров до точки
         self.declare_parameter('loop', False)           # зациклить маршрут
         self.declare_parameter('use_yaw_from_imu', True)  # yaw из /odom
@@ -367,11 +372,13 @@ class WaypointFollower(Node):
                                 min(self.max_angular, self.k_ang * err))
 
         # --- ЖЁСТКАЯ КОРРЕКЦИЯ КУРСА ---
-        # Если курс отклонился от цели более чем на turn_correct_deg (5°),
-        # останавливаемся (v=0) и разворачиваемся к цели. Это устраняет
-        # «рыскание» и неточность прохождения точек (робот едет только
-        # когда точно смотрит на цель).
-        if abs(err_deg) > self.turn_correct_deg and abs(err) <= self.yaw_tol:
+        # Опциональная жёсткая коррекция курса. Включается только явным
+        # положительным turn_correct_deg; по умолчанию отключена, поскольку
+        # требование «стоять, пока ошибка < 5°» при шумном GPS/компасе
+        # превращает движение в бесконечное вращение на месте.
+        if (self.turn_correct_deg > 0.0
+                and abs(err_deg) > self.turn_correct_deg
+                and abs(err) <= self.yaw_tol):
             cmd.linear.x = 0.0
             cmd.angular.z = max(-self.max_angular,
                                 min(self.max_angular, self.k_ang * err))
