@@ -16,10 +16,13 @@ waypoint_follower — движение по GPS-маршруту (уличный
       - ...
 
 Считает:
-  * курс на текущую точку (bearing по координатам GPS);
-  * поворот = bearing - текущий курс (из /odom или /imu/data);
+  * расстояние и курс на текущую точку по ТЕКУЩИМ координатам GPS;
+  * поворот = bearing - текущий курс (из /odom);
   * скорость = min(max_speed, k_lin * расстояние до точки);
   * при попадании в radius точки — переходит к следующей.
+
+Позиция /odometry/global не используется для расстояния до waypoint: она
+может дрейфовать. От неё используется только ориентация (yaw).
 
 Курс робота берётся из /odom (yaw), т.к. он у нас стабильный (от магнитометра).
 """
@@ -27,7 +30,6 @@ waypoint_follower — движение по GPS-маршруту (уличный
 import math
 import os
 
-import numpy as np
 import rclpy
 from rclpy.node import Node
 
@@ -38,7 +40,7 @@ from std_msgs.msg import Int8
 from std_srvs.srv import Trigger
 
 import yaml
-RAD2DEG = 180.0 / math.pi
+
 EARTH_R = 6371000.0   # средний радиус Земли, м
 
 
@@ -60,6 +62,8 @@ class WaypointFollower(Node):
         self.declare_parameter('waypoints_file', '')
         self.declare_parameter('odom_topic', '/odometry/global')
         self.declare_parameter('gps_topic', '/fix')
+        # Старый GPS fix нельзя считать текущей позицией робота.
+        self.declare_parameter('gps_timeout_sec', 2.0)
         # Целевая команда идёт на ВХОД obstacle_avoider (он публикует /cmd_vel/auto,
         # который слушает cmd_switcher). По умолчанию — /cmd_vel/auto_goal.
         self.declare_parameter('cmd_topic', '/cmd_vel/auto_goal')
@@ -99,6 +103,8 @@ class WaypointFollower(Node):
         wp_file = self.get_parameter('waypoints_file').value
         self.home_lat = float(self.get_parameter('home_latitude').value)
         self.home_lon = float(self.get_parameter('home_longitude').value)
+        self.gps_timeout_sec = max(
+            0.0, float(self.get_parameter('gps_timeout_sec').value))
         self.max_speed = float(self.get_parameter('max_speed').value)
         self.k_lin = float(self.get_parameter('k_lin').value)
         self.k_ang = float(self.get_parameter('k_ang').value)
@@ -119,15 +125,17 @@ class WaypointFollower(Node):
         self.turn_exit_deg = 80.0    # выходим, когда |err| < 80° (гистерезис)
 
         # --- маршрут -------------------------------------------------------
-        self.waypoints = []   # список (dx, dy, radius) в метрах от старта
+        # Храним географические координаты цели. Расстояние и направление
+        # считаются от последнего валидного /fix, а не от /odometry/global.
+        self.waypoints = []   # список (latitude, longitude, radius_m)
         if wp_file and os.path.exists(wp_file):
             with open(wp_file, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             for wp in data.get('waypoints', []):
-                dx, dy = latlon_to_xy(self.home_lat, self.home_lon,
-                                      float(wp['lat']), float(wp['lon']))
+                lat = float(wp['lat'])
+                lon = float(wp['lon'])
                 r = float(wp.get('radius', 2.0))
-                self.waypoints.append((dx, dy, r))
+                self.waypoints.append((lat, lon, r))
         else:
             self.get_logger().error(f"Файл маршрута не найден: {wp_file}")
 
@@ -148,9 +156,10 @@ class WaypointFollower(Node):
             )
 
         self.idx = 0
-        self.pose_xy = (0.0, 0.0)
+        self.pose_xy = (0.0, 0.0)  # оставлено для диагностики /odometry/global
         self.yaw = 0.0
-        self.gps = (0.0, 0.0)      # текущая GPS-координата (lat, lon) — для логов
+        self.gps = None             # текущая валидная GPS-координата (lat, lon)
+        self._gps_time = None       # время получения последнего валидного fix
         # ВАЖНО: автопилот стартует ВЫКЛЮЧЕННЫМ — после перезагрузки стека
         # робот всегда в ручном режиме и не поедет сам. Включается:
         #   * по режиму с пульта (подписка на /control_mode, режим AUTO), или
@@ -246,8 +255,17 @@ class WaypointFollower(Node):
                               1.0 - 2.0 * (q.y * q.y + q.z * q.z))
 
     def _on_gps(self, msg: NavSatFix):
-        if msg.status.status >= 0:   # есть фикс
-            self.gps = (msg.latitude, msg.longitude)
+        """Сохраняет только валидный GPS fix для расчёта дистанции.
+
+        NavSatFix со status < 0 либо NaN-координатами не должен заменять
+        последнюю позицию: иначе робот может получить фиктивную дистанцию до
+        waypoint или начать движение без определения позиции.
+        """
+        lat, lon = msg.latitude, msg.longitude
+        if (msg.status.status >= 0 and math.isfinite(lat) and math.isfinite(lon)
+                and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            self.gps = (lat, lon)
+            self._gps_time = self.get_clock().now()
 
     # --- главный цикл -------------------------------------------------------
     def _tick(self):
@@ -263,22 +281,43 @@ class WaypointFollower(Node):
                 self.get_logger().info("Маршрут завершён")
             return
 
-        tx, ty, radius = self.waypoints[self.idx]
-        x, y = self.pose_xy
-        dist = math.hypot(tx - x, ty - y)
+        target_lat, target_lon, radius = self.waypoints[self.idx]
+        gps_fresh = (
+            self._gps_time is not None
+            and (self.get_clock().now() - self._gps_time).nanoseconds / 1e9
+            <= self.gps_timeout_sec
+        )
+        if self.gps is None or not gps_fresh:
+            # Не используем (0, 0), home_lat/home_lon или /odom как подмену
+            # текущей GPS-позиции. До первого или при устаревшем fix движение
+            # небезопасно.
+            if not self.dry_run:
+                self.pub_cmd.publish(Twist())
+            self.get_logger().warning(
+                "Нет свежего валидного GPS fix: расстояние до waypoint не "
+                "рассчитано, команда движения не выдаётся",
+                throttle_duration_sec=5.0)
+            return
+
+        current_lat, current_lon = self.gps
+        # ENU-вектор ИМЕННО от текущего GPS fix до целевой GPS-точки.
+        # Его длина — дистанция до waypoint, по ней определяются скорость и
+        # факт достижения; /odometry/global здесь не участвует.
+        gx, gy = latlon_to_xy(current_lat, current_lon, target_lat, target_lon)
+        dist = math.hypot(gx, gy)
 
         # --- достигли точки? ---
         if dist < radius:
             self.get_logger().info(f"Точка {self.idx + 1}/{len(self.waypoints)} "
-                                   f"достигнута (dist={dist:.1f} м)")
+                                   f"достигнута по GPS (dist={dist:.1f} м)")
             self.idx += 1
+            self._target_yaw_lp = None
+            self._turn_dir = None
             return
 
-        # --- курс на цель (в мировой системе ENU: x-восток, y-север) ---
-        # Вектор цели в координатах map; goal_yaw_offset доворачивает его,
-        # если map-система повёрнута относительно «восток/север».
-        gx = tx - x
-        gy = ty - y
+        # --- курс на цель (ENU: x-восток, y-север) ---
+        # goal_yaw_offset используется только для согласования GPS ENU и yaw
+        # из /odom, если их системы отсчёта развёрнуты относительно друг друга.
         if self.goal_yaw_offset:
             c, s = math.cos(self.goal_yaw_offset), math.sin(self.goal_yaw_offset)
             gx, gy = c * gx - s * gy, s * gx + c * gy
@@ -346,17 +385,16 @@ class WaypointFollower(Node):
         # else: ничего не публикуем, робот остаётся под управлением пульта
 
         # --- чистый статус-лог (каждые ~1 сек при 10 Гц) ---
-        # Позиция из odom, следующая точка, угол рассогласования, GPS-координата.
+        # Статус: расстояние всегда получено от текущего GPS fix.
         self._log_tick = getattr(self, '_log_tick', 0) + 1
         if self._log_tick % 10 == 0:
-            gps_lat, gps_lon = self.gps
             self.get_logger().info(
                 f"WP[{self.idx + 1}/{len(self.waypoints)}] "
-                f"pos=({x:6.2f},{y:6.2f})m "
+                f"GPS=({current_lat:.7f},{current_lon:.7f}) | "
+                f"target=({target_lat:.7f},{target_lon:.7f}) | "
+                f"dist_gps={dist:5.1f}m "
                 f"yaw={math.degrees(self.yaw):+7.1f}° | "
-                f"next=({tx:6.2f},{ty:6.2f})m dist={dist:5.1f}m | "
                 f"ang_err={math.degrees(err):+6.1f}° | "
-                f"GPS=({gps_lat:.7f},{gps_lon:.7f}) | "
                 f"cmd: v={cmd.linear.x:.2f} w={cmd.angular.z:+.2f}"
                 + (" [DRY RUN - не отправлено]" if self.dry_run else "")
             )
