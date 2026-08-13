@@ -189,6 +189,7 @@ class ELRSReceiverNode(Node):
         self.current_mode = ControlModes.MANUAL
         self.get_logger().info(f'Initial control mode: MANUAL (1)')
 
+
         # Опубликовать стартовый режим сразу: после перезагрузки стека робот
         # всегда в РУЧНОМ режиме. Подписчики (waypoint_follower и др.) должны
         # узнать об этом немедленно, не дожидаясь первого пакета с пульта.

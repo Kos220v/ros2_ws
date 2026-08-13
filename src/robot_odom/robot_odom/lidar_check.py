@@ -152,9 +152,9 @@ def main():
         for i in info:
             print(" ", i)
         if not ok:
-            print(f"  ✘ {p} НЕ существует")
+            print(f"  ? {p} НЕ существует")
         for pr in problems:
-            print("  ✘", pr)
+            print("  ?", pr)
             problems_total += 1
 
     # 3. Проверка группы dialout
@@ -163,10 +163,10 @@ def main():
         groups = subprocess.run(['groups'], capture_output=True, text=True).stdout
         print(f"  Ваши группы: {groups.strip()}")
         if 'dialout' not in groups and 'uucp' not in groups:
-            print("  ✘ Нет группы dialout/uucp — вероятно, нет прав на порт.")
+            print("  ? Нет группы dialout/uucp — вероятно, нет прав на порт.")
             print("    Решение: sudo usermod -aG dialout $USER  (и перелогиниться)")
         else:
-            print("  ✔ Группа dialout/uucp есть.")
+            print("  ? Группа dialout/uucp есть.")
     except Exception as e:
         print(f"  Не удалось проверить группы: {e}")
 

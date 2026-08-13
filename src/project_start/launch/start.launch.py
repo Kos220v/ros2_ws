@@ -22,31 +22,6 @@
 
 import os
 import subprocess
-
-from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, TimerAction
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, LaunchConfiguration
-from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-from launch_ros.parameter_descriptions import ParameterValue
-from ament_index_python.packages import get_package_share_directory
-
-
-def _tty_vendor_id(dev):
-    """ID_VENDOR_ID tty-устройства (через udevadm), или None."""
-    try:
-        out = subprocess.run(
-            ['udevadm', 'info', '-q', 'property', '-n', dev],
-            capture_output=True, text=True, timeout=3)
-        for line in out.stdout.splitlines():
-            if line.startswith('ID_VENDOR_ID='):
-                return line.split('=', 1)[1].strip()
-    except Exception:
-        pass
-    return None
-
-
 def generate_launch_description():
     project_start_share = get_package_share_directory('project_start')
     config_dir = os.path.join(project_start_share, 'config')
@@ -82,36 +57,6 @@ def generate_launch_description():
     gps_port = '/dev/ttyUSB1'
 
 
-    # ------------------------------------------------------------ launch-аргументы
-    home_lat_arg = DeclareLaunchArgument('home_latitude', default_value='0.0')
-    home_lon_arg = DeclareLaunchArgument('home_longitude', default_value='0.0')
-    waypoints_file_arg = DeclareLaunchArgument(
-        'waypoints_file', default_value=os.path.join(config_dir, 'waypoints.yaml')
-    )
-
-    # ------------------------------------------------------------ Приемник ELRS
-    elrs_node = Node(
-        package='elrs_receiver',
-        executable='elrs_node',
-        name='elrs_receiver',
-        parameters=[{
-            'port': '/dev/ttyAMA2',
-            'baudrate': 420000,
-            'deadzone': 0.02,
-            'throttle_channel': 1,
-            'steering_channel': 0,
-            'invert_throttle': False,
-            'invert_steering': False,
-            'channel_min': 172,
-            'channel_center': 992,
-            'channel_max': 1811,
-        }],
-        output='screen'
-    )
-
-    # ------------------------------------------------------------ GPS (стандартный nmea_navsat_driver)
-    # ЖЁСТКАЯ СХЕМА ПОРТОВ: ЛИДАР = /dev/ttyUSB0, GPS = /dev/ttyUSB1
-    # (проверяется выше — при нарушении стек не запустится)
     gps_node = Node(
         package='nmea_navsat_driver',
         executable='nmea_serial_driver',

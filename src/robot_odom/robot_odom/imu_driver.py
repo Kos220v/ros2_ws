@@ -188,54 +188,70 @@ class HardwareIMU:
             raise
 
     def _init_mag(self):
-        # Автоопределение магнитометра по WHO_AM_I / ID-регистрам.
-        # В GPS-модулях (GEP-M10 и т.п.) компас бывает IST8310 / QMC7983 /
-        # AK8963 — НЕ только QMC5883L/HMC5883L. Пробуем по очереди:
-        #
-        #   QMC5883L : 0x0D, reg 0x00 = 0xFF
-        #   HMC5883L : 0x1E, regs 0x0A-0x0C = 'H' '4' '3'
-        #   IST8310  : 0x0E, reg 0x00 = 0x10
-        #   QMC7983  : 0x2C, reg 0x00 = 0x8B
-        #   AK8963   : 0x0C, reg 0x00 = 0x48
-        #
-        # Если определён неверно — значения «залипают» при повороте
-        # (читаем чужие регистры). После определения чипа проверьте
-        # вращением: ros2 run robot_odom imu_check --mag-heading-live
+        # --- QMC5883L (адрес 0x0D) — основной вариант ---
+        # ВАЖНО (фикс «залипания»): нужен НЕ только Control Register 1,
+        # но и Control Register 2 (0x0A) = 0x01 — НЕПРЕРЫВНЫЙ режим
+        # измерения. Без него магнитометр делает один замер и «замирает»,
+        # из-за чего азимут не меняется при вращении робота.
+        try:
+            self.bus.read_byte_data(0x0D, 0x00)
+            self.mag_addr = 0x0D
+            self.mag_type = 'QMC'
+            self.mag_little_endian = True
+            # Control Register 1 (0x09) = 0x1D: OSR=512, RNG=8G, ODR=50Hz
+            self.bus.write_byte_data(self.mag_addr, 0x09, 0x1D)
+            # Control Register 2 (0x0A) = 0x01: непрерывный режим (continuous)
+            self.bus.write_byte_data(self.mag_addr, 0x0A, 0x01)
+            time.sleep(0.01)   # дать датчику время на первый замер
+            if self.logger:
+                self.logger.info("Магнитометр: QMC5883L (0x0D), непрерывный режим")
+            return
+        except Exception:
+            pass
+        # --- HMC5883L (адрес 0x1E) ---
+        try:
+            self.bus.read_byte_data(0x1E, 0x03)
+            self.mag_addr = 0x1E
+            self.mag_type = 'HMC'
+            self.mag_little_endian = False
+            # Config Register B (0x02) = 0x00: gain 1370 LSB/Gauss, ±1.3Ga
+            self.bus.write_byte_data(self.mag_addr, 0x02, 0x00)
+            if self.logger:
+                self.logger.info("Магнитометр: HMC5883L (0x1E)")
+            return
+        except Exception:
+            pass
+        # --- Другие магнитометры из GPS-модулей (GEP-M10 и т.п.) ---
+        # Если в модуле стоит IST8310 / QMC7983 / AK8963 — определяем по
+        # WHO_AM_I и включаем непрерывный режим. Проверка вращением:
+        #   ros2 run robot_odom imu_check --mag-heading-live
         candidates = [
-            # (адрес, WHO_AM_I/ID регистр, ожидаемое значение, тип, little_endian)
-            (0x0D, 0x00, 0xFF, 'QMC', True),
+            # (адрес, WHO_AM_I регистр, ожидаемое значение, тип, little_endian)
             (0x0E, 0x00, 0x10, 'IST8310', False),
             (0x2C, 0x00, 0x8B, 'QMC7983', False),
             (0x0C, 0x00, 0x48, 'AK8963', False),
-            (0x1E, 0x0A, 0x48, 'HMC', False),   # HMC: reg 0x0A='H'(0x48)
         ]
         for addr, who_reg, who_val, mtype, little in candidates:
             try:
                 who = self.bus.read_byte_data(addr, who_reg)
-                if who == who_val:
-                    self.mag_addr = addr
-                    self.mag_type = mtype
-                    self.mag_little_endian = little
-                    if self.logger:
-                        self.logger.info(
-                            f"Магнитометр: {mtype} (0x{addr:02X}), WHO_AM_I=0x{who:02X}")
-                    # Инициализация конкретного чипа
-                    if mtype == 'QMC':
-                        # Control Register 1 (0x09) = 0x1D: continuous, 50 Гц, ±8G
-                        self.bus.write_byte_data(addr, 0x09, 0x1D)
-                    elif mtype == 'IST8310':
-                        # 0x0B=0x08: continuous mode 200 Гц
-                        self.bus.write_byte_data(addr, 0x0B, 0x08)
-                    elif mtype == 'QMC7983':
-                        # 0x09=0x01: continuous mode
-                        self.bus.write_byte_data(addr, 0x09, 0x01)
-                    elif mtype == 'AK8963':
-                        # 0x0A=0x16: continuous mode 2, 16-bit
-                        self.bus.write_byte_data(addr, 0x0A, 0x16)
-                    elif mtype == 'HMC':
-                        # Config Register B (0x02) = 0x00: gain 1370 LSB/Gauss
-                        self.bus.write_byte_data(addr, 0x02, 0x00)
-                    return
+                if who != who_val:
+                    continue
+                self.mag_addr = addr
+                self.mag_type = mtype
+                self.mag_little_endian = little
+                if self.logger:
+                    self.logger.info(
+                        f"Магнитометр: {mtype} (0x{addr:02X}), WHO_AM_I=0x{who:02X}")
+                if mtype == 'IST8310':
+                    # 0x0B=0x08: continuous mode 200 Гц
+                    self.bus.write_byte_data(addr, 0x0B, 0x08)
+                elif mtype == 'QMC7983':
+                    # 0x09=0x01: continuous mode
+                    self.bus.write_byte_data(addr, 0x09, 0x01)
+                elif mtype == 'AK8963':
+                    # 0x0A=0x16: continuous mode 2, 16-bit
+                    self.bus.write_byte_data(addr, 0x0A, 0x16)
+                return
             except Exception:
                 continue
         self.mag_addr = None

@@ -91,6 +91,11 @@ class WaypointFollower(Node):
         # поставьте -1.0.
         self.declare_parameter('angular_z_sign', 1.0)
 
+        # --- РЕЖИМ СУХОГО ПРОГОНА (для отладки) ---
+        # Если true — команды НЕ публикуются, робот остаётся под управлением
+        # с пульта. Логи выводятся полностью.
+        self.declare_parameter('dry_run', True)
+
         wp_file = self.get_parameter('waypoints_file').value
         self.home_lat = float(self.get_parameter('home_latitude').value)
         self.home_lon = float(self.get_parameter('home_longitude').value)
@@ -106,6 +111,8 @@ class WaypointFollower(Node):
         self.goal_yaw_offset = math.radians(
             float(self.get_parameter('goal_yaw_offset_deg').value))
         self.angular_z_sign = float(self.get_parameter('angular_z_sign').value)
+        self.dry_run = bool(self.get_parameter('dry_run').value)
+
         self._target_yaw_lp = None   # сглаженный целевой курс
         self._turn_dir = None        # зафиксированное направление разворота (при |err|~180°)
         self.turn_enter_deg = 100.0  # входим в «разворот», если |err| > 100°
@@ -134,6 +141,11 @@ class WaypointFollower(Node):
             f"yaw_tol={math.degrees(self.yaw_tol):.0f}°, "
             f"bearing_smoothing={self.bearing_smoothing}"
         )
+        if self.dry_run:
+            self.get_logger().warning(
+                "РЕЖИМ DRY RUN: команды НЕ публикуются, робот остаётся под управлением с пульта. "
+                "Наблюдайте за логами для отладки."
+            )
 
         self.idx = 0
         self.pose_xy = (0.0, 0.0)
@@ -185,7 +197,8 @@ class WaypointFollower(Node):
             if self.active:
                 self.active = False
                 self.auto_mode_reason = None
-                self.pub_cmd.publish(Twist())   # немедленная остановка
+                if not self.dry_run:
+                    self.pub_cmd.publish(Twist())   # немедленная остановка
                 self.get_logger().info(
                     f"Автопилот ВЫКЛЮЧЕН (режим {msg.data} с пульта)")
 
@@ -200,7 +213,8 @@ class WaypointFollower(Node):
     def _cb_disable(self, req, res):
         self.active = False
         self.auto_mode_reason = None
-        self.pub_cmd.publish(Twist())   # остановка
+        if not self.dry_run:
+            self.pub_cmd.publish(Twist())   # остановка
         res.success = True
         res.message = "Waypoint follower выключен"
         self.get_logger().info("Автопилот ВЫКЛЮЧЕН (сервис)")
@@ -241,7 +255,8 @@ class WaypointFollower(Node):
             return
         if self.idx >= len(self.waypoints):
             # Маршрут пройден
-            self.pub_cmd.publish(Twist())
+            if not self.dry_run:
+                self.pub_cmd.publish(Twist())
             if self.loop:
                 self.idx = 0
             else:
@@ -325,7 +340,10 @@ class WaypointFollower(Node):
         # Инверсия знака поворота (если робот крутится в другую сторону):
         cmd.angular.z *= self.angular_z_sign
 
-        self.pub_cmd.publish(cmd)
+        # --- Публикация команды (только если НЕ dry_run) ---
+        if not self.dry_run:
+            self.pub_cmd.publish(cmd)
+        # else: ничего не публикуем, робот остаётся под управлением пульта
 
         # --- чистый статус-лог (каждые ~1 сек при 10 Гц) ---
         # Позиция из odom, следующая точка, угол рассогласования, GPS-координата.
@@ -340,6 +358,7 @@ class WaypointFollower(Node):
                 f"ang_err={math.degrees(err):+6.1f}° | "
                 f"GPS=({gps_lat:.7f},{gps_lon:.7f}) | "
                 f"cmd: v={cmd.linear.x:.2f} w={cmd.angular.z:+.2f}"
+                + (" [DRY RUN - не отправлено]" if self.dry_run else "")
             )
 
 
@@ -356,4 +375,8 @@ def main(args=None):
 
 
 if __name__ == '__main__':
+
     main()
+
+    main()
+
