@@ -166,6 +166,139 @@ def mag_log(imu, interval=0.2):
         print("Готово.")
 
 
+def stationary_test(imu, duration=15.0, interval=0.25):
+    """
+    СТАЦИОНАРНЫЙ ТЕСТ: робот стоит неподвижно, проверяем, что драйвер
+    корректно читает гироскоп и магнитометр.
+
+    Отвечает на вопрос «почему yaw вращается/скачет, когда робот стоит»:
+      * GYRO (град/с) — в покое должен быть ~0 по всем осям. Если по Z есть
+        стабильное смещение (например, +40°/с) — калибровка bias была плохой
+        (робот двигался/вибрировал при старте), и EKF интегрирует это
+        смещение → yaw равномерно вращается;
+      * MAG ANG (азимут atan2) — должен СТОЯТЬ на месте (не вращаться).
+        Если ANG равномерно «едет» при неподвижном роботе — магнитометр
+        читается неверно (байтовый порядок/регистры/сбой I2C) либо рядом
+        вращающееся магнитное поле (моторы!);
+      * |M| — стабильный модуль поля (без скачков и без аномально малых
+        значений — I2C-сбои дают нули).
+    """
+    print()
+    print(f"=== Стационарный тест датчиков ({duration:.0f} сек) ===")
+    print("РОБОТ ДОЛЖЕН СТОЯТЬ НЕПОДВИЖНО. МОТОРЫ И ЛИДАР — ВЫКЛЮЧЕНЫ!")
+    print("(вибрация и магнитные помехи моторов испортят выводы)")
+    print()
+    t0 = time.time()
+    prev_ang = None
+    ang_unwrapped = 0.0        # накопленный дрейф ANG (без учёта перехода 360->0)
+    n = 0
+    gyr_sum = np.zeros(3)
+    gyr_sum2 = np.zeros(3)
+    mag_norms = []
+    try:
+        while time.time() - t0 < duration:
+            acc, gyro, mag = imu.get_data()
+            n += 1
+            gyr_sum += gyro
+            gyr_sum2 += gyro * gyro
+            mn = float(np.linalg.norm(mag))
+            mag_norms.append(mn)
+            if mn > 1.0:
+                ang = math.degrees(math.atan2(mag[1], mag[0])) % 360.0
+                if prev_ang is not None:
+                    d = (ang - prev_ang + 180.0) % 360.0 - 180.0
+                    ang_unwrapped += d
+                prev_ang = ang
+            roll, pitch = acc_level(acc)
+            sys.stdout.write(
+                "\r[%4.1fс] GYR X=%+6.2f Y=%+6.2f Z=%+6.2f °/с | "
+                "MAG X=%+6.0f Y=%+6.0f Z=%+6.0f |M|=%6.0f | ANG=%6.1f° | "
+                "level r=%+5.1f p=%+5.1f°" % (
+                    time.time() - t0,
+                    gyro[0] * RAD2DEG, gyro[1] * RAD2DEG, gyro[2] * RAD2DEG,
+                    mag[0], mag[1], mag[2], mn, ang if mn > 1.0 else float('nan'),
+                    roll, pitch))
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    print()
+    print()
+
+    gyr_mean = gyr_sum / max(n, 1)
+    gyr_std = np.sqrt(np.maximum(gyr_sum2 / max(n, 1) - gyr_mean * gyr_mean, 0.0))
+    gz_mean = gyr_mean[2] * RAD2DEG
+    gz_std = gyr_std[2] * RAD2DEG
+    gxy_max = max(abs(gyr_mean[0]), abs(gyr_mean[1])) * RAD2DEG
+    mag_norms = np.array(mag_norms) if mag_norms else np.array([0.0])
+    m_min, m_max = float(mag_norms.min()), float(mag_norms.max())
+    m_spread = (m_max - m_min) / max(m_min, 1.0) * 100.0
+
+    print("=== Итог стационарного теста ===")
+    print(f"  Гироскоп Z: среднее {gz_mean:+.2f} °/с, разброс {gz_std:.2f} °/с "
+          f"(X/Y среднее: {gxy_max:.2f} °/с)")
+    print(f"  Магнитометр: |M| от {m_min:.0f} до {m_max:.0f} LSB "
+          f"(разброс {m_spread:.0f}%)")
+    print(f"  Магнитный курс ANG: дрейф за тест {ang_unwrapped:+.1f}° "
+          f"(должен быть ~0)")
+    print()
+
+    problems = 0
+
+    if abs(gz_mean) > 2.0:
+        problems += 1
+        print(f"  ✘ ГИРОСКОП: по Z смещение {gz_mean:+.2f} °/с — это и есть "
+              "источник вращения yaw.")
+        print("    Причина: калибровка bias была плохой (робот двигался или "
+              "вибрировал при старте, лидар/моторы были включены).")
+        print("    Решение: перезапустите ноду при НЕПОДВИЖНОМ роботе, "
+              "лидар/моторы выключены; проверьте калибровку:")
+        print("      ros2 run robot_odom imu_check --calibrate-gyro")
+    elif gz_std > 2.0:
+        problems += 1
+        print(f"  ⚠ ГИРОСКОП: разброс по Z {gz_std:.2f} °/с — вибрация/помехи.")
+        print("    Убедитесь, что лидар и моторы выключены во время теста.")
+    else:
+        print("  ✔ ГИРОСКОП: в покое ~0 — чтение корректно, калибровка bias ок.")
+
+    if imu.mag_type is None:
+        problems += 1
+        print("  ✘ МАГНИТОМЕТР: не найден на шине (QMC5883L=0x0D, HMC5883L=0x1E).")
+        print("    При включённом use_magnetometer курс остаётся чисто гироскопным")
+        print("    и дрейфует. Проверьте: i2cdetect -y 1, провода, адрес.")
+    elif m_min < 100.0:
+        problems += 1
+        print(f"  ✘ МАГНИТОМЕТР: |M| = {m_min:.0f} LSB — подозрительно мало "
+              "(похоже на сбой I2C: чтение даёт нули).")
+        print("    Проверьте провода/пайку/адрес (i2cdetect -y 1).")
+    elif abs(ang_unwrapped) > 8.0:
+        problems += 1
+        print(f"  ✘ МАГНИТОМЕТР: магнитный курс вращается на "
+              f"{ang_unwrapped:+.1f}° за тест при неподвижном роботе!")
+        print("    Причины: 1) неверное чтение регистров/порядок байт в "
+              "imu_driver; 2) вращающееся магнитное поле рядом (моторы/динамики);")
+        print("    3) датчик физически вращается (жгут проводов?).")
+        print("    Проверьте поточечно: ros2 run robot_odom imu_check --mag-log")
+    else:
+        print("  ✔ МАГНИТОМЕТР: курс стабилен при неподвижном роботе — "
+              "чтение корректно.")
+
+    if m_spread > 30.0:
+        problems += 1
+        print(f"  ⚠ МАГНИТОМЕТР: |M| скачет ({m_spread:.0f}%) — помехи от "
+              "моторов/питания или сбои I2C.")
+    elif imu.mag_type is not None:
+        print(f"  ✔ МАГНИТОМЕТР: |M| стабилен (разброс {m_spread:.0f}%).")
+
+    print()
+    if problems == 0:
+        print("  ВЫВОД: датчики читаются правильно. Проблема — в обработке/")
+        print("  слиянии внутри odom_node (EKF/фильтры) — смотрите логи ноды.")
+    else:
+        print(f"  ВЫВОД: найдено проблем: {problems}. Исправьте их и повторите тест.")
+    print()
+
+
 def calibrate_gyro(imu, samples=200, interval=0.01):
     """
     Калибровка гироскопа с контролем неподвижности.
@@ -439,6 +572,49 @@ def live_loop(imu, refresh):
         print()
 
 
+def mag_scan():
+    """Скан WHO_AM_I / ID регистров магнитометров по известным адресам.
+
+    Помогает определить, какой компас реально стоит в GPS-модуле
+    (GEP-M10 и т.п.): QMC5883L/HMC5883L/IST8310/QMC7983/AK8963.
+    """
+    import smbus2
+    print("=== Скан магнитометров (WHO_AM_I / ID) ===")
+    print("Адрес  Регистр  Ожидание   Прочитано  ->  Чип")
+    cands = [
+        (0x0D, 0x00, 0xFF, 'QMC5883L'),
+        (0x0E, 0x00, 0x10, 'IST8310'),
+        (0x2C, 0x00, 0x8B, 'QMC7983'),
+        (0x0C, 0x00, 0x48, 'AK8963'),
+        (0x1E, 0x0A, 0x48, 'HMC5883L'),
+        (0x1C, 0x0F, 0x3D, 'LIS3MDL'),
+        (0x30, 0x2F, 0x30, 'MMC5983MA'),
+    ]
+    try:
+        bus = smbus2.SMBus(1)
+    except Exception as e:
+        print(f"  Не удалось открыть I2C-1: {e}")
+        return
+    found = None
+    for addr, reg, exp, name in cands:
+        try:
+            val = bus.read_byte_data(addr, reg)
+            mark = 'OK' if val == exp else '  '
+            print(f"  0x{addr:02X}   0x{reg:02X}    0x{exp:02X}      0x{val:02X}    {mark} {name}")
+            if val == exp:
+                found = (name, addr)
+        except Exception:
+            print(f"  0x{addr:02X}   0x{reg:02X}    0x{exp:02X}      --        (нет ответа)")
+    print()
+    if found:
+        print(f"  ИТОГ: найден {found[0]} на адресе 0x{found[1]:02X}")
+        print("  Если это не QMC5883L/HMC5883L — драйвер уже умеет его читать")
+        print("  (IST8310/QMC7983/AK8963), пересоберите robot_odom.")
+    else:
+        print("  ИТОГ: знакомый магнитометр не найден.")
+        print("  Проверьте i2cdetect -y 1 и маркировку GPS-модуля.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Проверка ориентации IMU и магнитометра")
@@ -467,6 +643,17 @@ def main():
                              "при повороте робота — диагностика размахов")
     parser.add_argument("--mag-log", action="store_true",
                         help="лог магнитометра построчно (по точкам: 0/90/180/270°)")
+    parser.add_argument("--stationary", type=float, nargs="?", const=15.0,
+                        metavar="СЕК",
+                        help="СТАЦИОНАРНЫЙ тест: робот стоит неподвижно, "
+                             "проверяем чтение гироскопа и магнитометра "
+                             "(по умолчанию 15 сек); моторы/лидар ВЫКЛ")
+    parser.add_argument("--mag-scan", action="store_true",
+                        help="скан WHO_AM_I/ID магнитометров (определить чип "
+                             "компаса в GPS-модуле)")
+    parser.add_argument("--mag-z-invert", action="store_true",
+                        help="как параметр mag_z_invert ноды: инвертировать "
+                             "ось Z магнитометра (QMC выдаёт MZ «вниз»)")
     parser.add_argument("--hard-iron", type=str, default=None, metavar="X Y Z",
                         help="компенсация hard-iron в LSB (например: '2752 3375 1487')")
     parser.add_argument("--scale", type=str, default=None, metavar="X Y Z",
@@ -477,13 +664,22 @@ def main():
           "(держите робота неподвижно плашмя)")
     hi = [float(v) for v in args.hard_iron.split()] if args.hard_iron else [0, 0, 0]
     sc = [float(v) for v in args.scale.split()] if args.scale else [1, 1, 1]
+    if args.mag_scan:
+        mag_scan()
+        return 0
+
     imu = HardwareIMU(bus_num=1,
                       mag_yaw_offset_deg=args.mag_offset,
+                      mag_z_invert=args.mag_z_invert,
                       mag_hard_iron_x=hi[0], mag_hard_iron_y=hi[1], mag_hard_iron_z=hi[2],
                       mag_scale_x=sc[0], mag_scale_y=sc[1], mag_scale_z=sc[2])
     imu.calibrate(samples=args.samples)
     print("Магнитометр:", imu.mag_type or "не найден")
     print()
+
+    if args.stationary:
+        stationary_test(imu, duration=args.stationary)
+        return 0
 
     if args.mag_log:
         mag_log(imu, interval=max(args.refresh, 0.1))

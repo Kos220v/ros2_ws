@@ -118,7 +118,8 @@ class HardwareIMU:
             self.mount_rot = None
         self.mpu_addr = 0x68
         self.mag_addr = None
-        self.mag_type = None      # 'QMC' | 'HMC' | None
+        self.mag_type = None      # 'QMC' | 'HMC' | 'IST8310' | 'QMC7983' | 'AK8963' | None
+        self.mag_little_endian = True   # порядок байт данных магнитометра
 
         # Результаты автокалибровки (вычитаются/прибавляются в get_data)
         self.gyro_bias = np.zeros(3)   # рад/с
@@ -187,29 +188,61 @@ class HardwareIMU:
             raise
 
     def _init_mag(self):
-        # Пробуем QMC5883L (адрес 0x0D)
-        try:
-            self.bus.read_byte_data(0x0D, 0x00)
-            self.mag_addr = 0x0D
-            self.mag_type = 'QMC'
-            # Control Register 1 (0x09) = 0x1D: continuous mode, 50 Гц, ±8G, OSR=512
-            self.bus.write_byte_data(self.mag_addr, 0x09, 0x1D)
-            return
-        except Exception:
-            pass
-        # Пробуем HMC5883L (адрес 0x1E)
-        try:
-            self.bus.read_byte_data(0x1E, 0x03)
-            self.mag_addr = 0x1E
-            self.mag_type = 'HMC'
-            # Config Register B (0x02) = 0x00: gain 1370 LSB/Gauss, ±1.3Ga
-            self.bus.write_byte_data(self.mag_addr, 0x02, 0x00)
-            return
-        except Exception:
-            pass
+        # Автоопределение магнитометра по WHO_AM_I / ID-регистрам.
+        # В GPS-модулях (GEP-M10 и т.п.) компас бывает IST8310 / QMC7983 /
+        # AK8963 — НЕ только QMC5883L/HMC5883L. Пробуем по очереди:
+        #
+        #   QMC5883L : 0x0D, reg 0x00 = 0xFF
+        #   HMC5883L : 0x1E, regs 0x0A-0x0C = 'H' '4' '3'
+        #   IST8310  : 0x0E, reg 0x00 = 0x10
+        #   QMC7983  : 0x2C, reg 0x00 = 0x8B
+        #   AK8963   : 0x0C, reg 0x00 = 0x48
+        #
+        # Если определён неверно — значения «залипают» при повороте
+        # (читаем чужие регистры). После определения чипа проверьте
+        # вращением: ros2 run robot_odom imu_check --mag-heading-live
+        candidates = [
+            # (адрес, WHO_AM_I/ID регистр, ожидаемое значение, тип, little_endian)
+            (0x0D, 0x00, 0xFF, 'QMC', True),
+            (0x0E, 0x00, 0x10, 'IST8310', False),
+            (0x2C, 0x00, 0x8B, 'QMC7983', False),
+            (0x0C, 0x00, 0x48, 'AK8963', False),
+            (0x1E, 0x0A, 0x48, 'HMC', False),   # HMC: reg 0x0A='H'(0x48)
+        ]
+        for addr, who_reg, who_val, mtype, little in candidates:
+            try:
+                who = self.bus.read_byte_data(addr, who_reg)
+                if who == who_val:
+                    self.mag_addr = addr
+                    self.mag_type = mtype
+                    self.mag_little_endian = little
+                    if self.logger:
+                        self.logger.info(
+                            f"Магнитометр: {mtype} (0x{addr:02X}), WHO_AM_I=0x{who:02X}")
+                    # Инициализация конкретного чипа
+                    if mtype == 'QMC':
+                        # Control Register 1 (0x09) = 0x1D: continuous, 50 Гц, ±8G
+                        self.bus.write_byte_data(addr, 0x09, 0x1D)
+                    elif mtype == 'IST8310':
+                        # 0x0B=0x08: continuous mode 200 Гц
+                        self.bus.write_byte_data(addr, 0x0B, 0x08)
+                    elif mtype == 'QMC7983':
+                        # 0x09=0x01: continuous mode
+                        self.bus.write_byte_data(addr, 0x09, 0x01)
+                    elif mtype == 'AK8963':
+                        # 0x0A=0x16: continuous mode 2, 16-bit
+                        self.bus.write_byte_data(addr, 0x0A, 0x16)
+                    elif mtype == 'HMC':
+                        # Config Register B (0x02) = 0x00: gain 1370 LSB/Gauss
+                        self.bus.write_byte_data(addr, 0x02, 0x00)
+                    return
+            except Exception:
+                continue
+        self.mag_addr = None
+        self.mag_type = None
         if self.logger:
             self.logger.warning(
-                "Магнитометр не найден (QMC5883L/HMC5883L). "
+                "Магнитометр не найден (QMC5883L/HMC5883L/IST8310/QMC7983/AK8963). "
                 "Курс будет дрейфовать — недоступна магнитная коррекция по рысканию."
             )
 
@@ -363,6 +396,19 @@ class HardwareIMU:
             mx = self.read_word_2c(self.mag_addr, 0x03)
             mz = self.read_word_2c(self.mag_addr, 0x05)
             my = self.read_word_2c(self.mag_addr, 0x07)
+            mag = np.array([mx, my, mz], dtype=float)
+        elif self.mag_type in ('IST8310', 'AK8963'):
+            # IST8310: данные X_L,X_H,Y_L,Y_H,Z_L,Z_H начиная с 0x03 (little-endian)
+            # AK8963 : данные X_L,X_H,Y_L,Y_H,Z_L,Z_H начиная с 0x03 (little-endian)
+            mx = self.read_word_2c(self.mag_addr, 0x03, True)
+            my = self.read_word_2c(self.mag_addr, 0x05, True)
+            mz = self.read_word_2c(self.mag_addr, 0x07, True)
+            mag = np.array([mx, my, mz], dtype=float)
+        elif self.mag_type == 'QMC7983':
+            # QMC7983: данные X_L,X_H,Y_L,Y_H,Z_L,Z_H начиная с 0x01 (little-endian)
+            mx = self.read_word_2c(self.mag_addr, 0x01, True)
+            my = self.read_word_2c(self.mag_addr, 0x03, True)
+            mz = self.read_word_2c(self.mag_addr, 0x05, True)
             mag = np.array([mx, my, mz], dtype=float)
 
         # Калибровка магнитометра: вычитание hard-iron + масштаб soft-iron
