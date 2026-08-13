@@ -87,6 +87,17 @@ def wrap_angle(a):
     return math.atan2(math.sin(a), math.cos(a))
 
 
+def valid_magnetic_field(mag):
+    """True, если отсчёт магнитометра можно использовать для коррекции yaw.
+
+    При ошибке I2C драйвер возвращает нулевой вектор. ``atan2(0, 0)`` не
+    сообщает об ошибке и даёт 0, из-за чего комплементарный фильтр мог
+    повернуть odom к ложному курсу. Отбрасываем также NaN/Inf.
+    """
+    mag = np.asarray(mag, dtype=float)
+    return bool(np.all(np.isfinite(mag)) and np.linalg.norm(mag) > 1e-6)
+
+
 def update_drift_estimate(drift, accum, count, gyro_z, moving, n_samples):
     """
     Оценка остаточного дрейфа гироскопа по оси Z.
@@ -167,6 +178,10 @@ class OdomNode(Node):
         #   'mag'   — курс ТОЛЬКО от магнитометра (может «залипать»).
         self.declare_parameter("robot_yaw_joint", "robot_yaw")
         self.declare_parameter("yaw_source", "imu")
+        # Инверсия знака рыскания. В ROS/REP-103 поворот влево (CCW) должен
+        # увеличивать yaw и в RViz отображаться влево. Включите параметр,
+        # если физически робот поворачивает влево, а модель в RViz — вправо.
+        self.declare_parameter("invert_yaw", False)
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("publish_tf", True)
@@ -279,6 +294,7 @@ class OdomNode(Node):
         self.y_name = self.get_parameter("robot_y_joint").value
         self.yaw_name = self.get_parameter("robot_yaw_joint").value
         self.yaw_source = str(self.get_parameter("yaw_source").value).lower()
+        self.invert_yaw = bool(self.get_parameter("invert_yaw").value)
         self.odom_frame = self.get_parameter("odom_frame").value
         self.base_frame = self.get_parameter("base_frame").value
         self.publish_tf = self.get_parameter("publish_tf").value
@@ -387,7 +403,8 @@ class OdomNode(Node):
                 f"z_invert={'да' if self.mag_z_invert else 'нет'})"
             )
         self.get_logger().info(
-            f"yaw_source: {self.yaw_source} (robot_yaw_joint='{self.yaw_name}')"
+            f"yaw_source: {self.yaw_source} (robot_yaw_joint='{self.yaw_name}', "
+            f"invert_yaw={'да' if self.invert_yaw else 'нет'})"
         )
         self.get_logger().info(
             f"IMU-конфигурация: acc_invert={'ДА' if self.acc_invert else 'нет'} | "
@@ -556,6 +573,12 @@ class OdomNode(Node):
             self.get_logger().error(f"Ошибка чтения IMU: {e}")
             return
 
+        # Приводим знак yaw к ROS/REP-103: поворот влево должен увеличивать
+        # yaw. Это влияет на интеграцию гироскопа, /imu/data и /odom.
+        if self.invert_yaw:
+            gyro = gyro.copy()
+            gyro[2] = -gyro[2]
+
         self.get_logger().debug(
             f"ACC(м/с²): X={acc[0]:.2f} Y={acc[1]:.2f} Z={acc[2]:.2f} | "
             f"GYR(рад/с): X={gyro[0]:.3f} Y={gyro[1]:.3f} Z={gyro[2]:.3f} | "
@@ -597,7 +620,8 @@ class OdomNode(Node):
             # Курс ТОЛЬКО от магнитометра (с компенсацией наклона), уровень
             # от акселерометра (низкочастотный фильтр). Гироскоп в курсе
             # не участвует — дрейфа нет.
-            if not (self.imu.mag_type is not None and self.use_magnetometer):
+            if not (self.imu.mag_type is not None and self.use_magnetometer
+                    and valid_magnetic_field(mag)):
                 self.get_logger().warning(
                     "yaw_source='mag', но магнитометр недоступен — "
                     "использую EKF (гироскоп+акселерометр)")
@@ -636,11 +660,18 @@ class OdomNode(Node):
                 f"{math.degrees(self._yaw_origin):.1f}° — ось X odom совпадает "
                 f"со стартовой ориентацией робота"
             )
-        if self._yaw_origin is not None:
-            roll, pitch, yaw = rpy_from_quat(self.q)
-            self.q = quat_wxyz_from_rpy(roll, pitch, wrap_angle(yaw - self._yaw_origin))
 
-        self.current_yaw = self._quat_yaw(self.q)
+        # В /odom публикуем относительный курс (от начальной ориентации) и
+        # только здесь применяем постоянную поправку. Нельзя добавлять
+        # yaw_bias к self._yaw_int в каждом тике: это превращает постоянную
+        # калибровку в искусственную угловую скорость.
+        roll, pitch, yaw = rpy_from_quat(self.q)
+        if self._yaw_origin is not None:
+            yaw = wrap_angle(yaw - self._yaw_origin)
+        yaw = wrap_angle(yaw + math.radians(self.yaw_bias_deg))
+        self.q = quat_wxyz_from_rpy(roll, pitch, yaw)
+
+        self.current_yaw = yaw
         self.current_gyro = gyro
         self.current_acc = acc
 
@@ -668,7 +699,7 @@ class OdomNode(Node):
                 azim_deg = None
                 if self.imu.mag_type is not None and self.use_magnetometer:
                     mag_yaw_deg = math.degrees(
-                        tilt_compensated_heading(roll, pitch, mag))
+                        self._magnetic_yaw(roll, pitch, mag))
                     azim_deg = tilt_compensated_azimuth_deg(roll, pitch, mag)
                 if mag_yaw_deg is not None:
                     diff_deg = math.degrees(wrap_angle(yaw - math.radians(mag_yaw_deg)))
@@ -714,6 +745,11 @@ class OdomNode(Node):
 
         self.pub_imu.publish(imu_msg)
 
+    def _magnetic_yaw(self, roll, pitch, mag):
+        """Магнитный yaw в той же знаковой конвенции, что и гироскоп."""
+        yaw = tilt_compensated_heading(roll, pitch, mag)
+        return -yaw if self.invert_yaw else yaw
+
     def _update_yaw_fused(self, acc, gyro, mag, dt):
         """Собственный контур курса: акселерометр (уровень) + гироскоп
         (интеграция yaw) + компас (комплементарная коррекция).
@@ -745,8 +781,9 @@ class OdomNode(Node):
         # --- комплементарная коррекция магнитным курсом ---
         # Зона нечувствительности отсекает шум магнитометра; в покое
         # («якорь») курс жёстко привязывается к компасу.
-        if self.use_magnetometer and self.imu.mag_type is not None:
-            yaw_mag = tilt_compensated_heading(roll, pitch, mag)
+        if (self.use_magnetometer and self.imu.mag_type is not None
+                and valid_magnetic_field(mag)):
+            yaw_mag = self._magnetic_yaw(roll, pitch, mag)
             diff = wrap_angle(yaw_mag - self._yaw_int)
             if abs(math.degrees(diff)) > self.mag_yaw_deadzone_deg:
                 gain = self.mag_yaw_gain_eff
@@ -755,10 +792,9 @@ class OdomNode(Node):
                     gain = min(1.0, gain * self.mag_yaw_anchor_gain)
                 self._yaw_int = wrap_angle(self._yaw_int + gain * diff)
 
-        # --- фиксированная поправка и сглаживание курса ---
-        if self.yaw_bias_deg:
-            self._yaw_int = wrap_angle(
-                self._yaw_int + math.radians(self.yaw_bias_deg))
+        # --- сглаживание курса ---
+        # yaw_bias_deg применяется один раз перед публикацией /odom ниже.
+        # Не вносите его в _yaw_int: _yaw_int — внутреннее состояние фильтра.
         if self.yaw_smoothing > 0.0:
             if self._yaw_smoothed is None:
                 self._yaw_smoothed = self._yaw_int
@@ -786,7 +822,7 @@ class OdomNode(Node):
         pitch = math.asin(max(-1.0, min(1.0, a[0] / norm)))
         roll = math.atan2(-a[1], -a[2])
         # Курс из магнитометра с компенсацией наклона:
-        yaw = tilt_compensated_heading(roll, pitch, mag)
+        yaw = self._magnetic_yaw(roll, pitch, mag)
         # Сглаживание курса (убирает шум магнитометра):
         if self.yaw_smoothing > 0.0:
             if self._yaw_smoothed is None:
@@ -795,8 +831,6 @@ class OdomNode(Node):
                 self._yaw_smoothed = self._yaw_smoothed + \
                     self.yaw_smoothing * wrap_angle(yaw - self._yaw_smoothed)
             yaw = self._yaw_smoothed
-        if self.yaw_bias_deg:
-            yaw = wrap_angle(yaw + math.radians(self.yaw_bias_deg))
         self.q = quat_wxyz_from_rpy(roll, pitch, yaw)
 
     def _mag_only_fallback(self, gyro, acc, dt):
@@ -813,10 +847,6 @@ class OdomNode(Node):
                 self._yaw_smoothed = self._yaw_smoothed + \
                     self.yaw_smoothing * wrap_angle(yaw - self._yaw_smoothed)
             self.q = quat_wxyz_from_rpy(roll, pitch, self._yaw_smoothed)
-        if self.yaw_bias_deg:
-            roll, pitch, yaw = rpy_from_quat(self.q)
-            yaw = wrap_angle(yaw + math.radians(self.yaw_bias_deg))
-            self.q = quat_wxyz_from_rpy(roll, pitch, yaw)
 
     @staticmethod
     def _quat_yaw(q):
