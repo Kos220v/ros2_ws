@@ -1,0 +1,37 @@
+# ============================================================================
+# 99-robot-usb.rules — правила udev для USB-устройств робота (лидар + GPS)
+#
+# УСТАНОВКА:
+#   sudo cp 99-robot-usb.rules /etc/udev/rules.d/
+#   sudo cp fix_ttyusb_order.sh /usr/local/sbin/
+#   sudo chmod +x /usr/local/sbin/fix_ttyusb_order.sh
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# ЧТО ДЕЛАЕТ:
+#   1) ГАРАНТИРУЕТ ПОРЯДОК при каждой загрузке/подключении:
+#        ЛИДАР (CP210x, 10c4:ea60) -> /dev/ttyUSB0
+#        GPS   (PL2303, 067b:2303) -> /dev/ttyUSB1
+#      (скрипт fix_ttyusb_order.sh перепривязывает интерфейсы в нужном
+#      порядке; номера ttyUSB* udev переименовать не может)
+#   2) Даёт доступ к портам всем (MODE="0666").
+#   3) Создаёт вспомогательные симлинки /dev/lidar и /dev/gps
+#      (удобно для ручных запусков; в стеке используются ttyUSB0/ttyUSB1).
+#
+# ПРОВЕРКА после перезагрузки:
+#   udevadm info /dev/ttyUSB0 | grep ID_VENDOR_ID   # 10c4 (лидар)
+#   udevadm info /dev/ttyUSB1 | grep ID_VENDOR_ID   # 067b (GPS)
+#   journalctl -t fix_ttyusb_order | tail           # лог фиксатора
+# ============================================================================
+
+# --- 1) Фиксатор порядка: лидар всегда ttyUSB0, GPS всегда ttyUSB1 ---
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*", RUN+="/usr/local/sbin/fix_ttyusb_order.sh"
+
+# --- 2) Доступ к портам ---
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*", MODE="0666"
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", MODE="0666"
+
+# --- 3) Вспомогательные симлинки (по VID/PID, для ручного запуска) ---
+# Лидар: Silicon Labs CP210x USB-UART
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0666", SYMLINK+="lidar"
+# GPS: Prolific PL2303 USB-UART
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", MODE="0666", SYMLINK+="gps"

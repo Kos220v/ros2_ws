@@ -1,0 +1,38 @@
+# ============================================================
+# ydlidar_params.yaml — параметры драйвера YDLidar
+# СХЕМА ПОРТОВ: ЛИДАР = /dev/lidar (или /dev/ttyUSB0),
+#               GPS    = /dev/gps   (или /dev/ttyUSB1)
+# (постоянные имена задаёт 99-robot-usb.rules; ttyUSB* — фолбэк)
+# ============================================================
+# ВАЖНО: лидар у вас — Tmini Plus (по логу: Model Code 151,
+# "Baseplate device info ... Model: Tmini Plus").
+# Параметры ниже приведены к Tmini Plus (НЕ к X4!):
+#   baudrate 115200, lidar_type 0 (serial), isSingleChannel true,
+#   sample_rate 4, fixed_resolution false, range_max 12.0, range_min 0.03.
+# Если у вас другая модель — сверьте с официальной документацией
+# YDLidar (X2/X4: 115200, single, sample_rate 9, fixed_resolution true,
+# range_max 16/18).
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    port: /dev/lidar
+    frame_id: laser_frame
+    ignore_array: ""
+    baudrate: 115200
+    lidar_type: 0
+    device_type: 0
+    sample_rate: 4
+    intensity_bit: 0
+    abnormal_check_count: 4
+    fixed_resolution: false
+    reversion: true
+    inverted: true
+    auto_reconnect: true
+    isSingleChannel: true
+    intensity: false
+    support_motor_dtr: false
+    angle_max: 180.0
+    angle_min: -180.0
+    range_max: 12.0
+    range_min: 0.03
+    frequency: 10.0
+    invalid_range_is_inf: false

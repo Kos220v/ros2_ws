@@ -21,7 +21,6 @@
 """
 
 import os
-import subprocess
 
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, TimerAction
@@ -33,53 +32,24 @@ from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 
-def _tty_vendor_id(dev):
-    """ID_VENDOR_ID tty-устройства (через udevadm), или None."""
-    try:
-        out = subprocess.run(
-            ['udevadm', 'info', '-q', 'property', '-n', dev],
-            capture_output=True, text=True, timeout=3)
-        for line in out.stdout.splitlines():
-            if line.startswith('ID_VENDOR_ID='):
-                return line.split('=', 1)[1].strip()
-    except Exception:
-        pass
-    return None
+def _first_existing(*paths):
+    """Возвращает первый существующий путь (для udev-алиасов и ttyUSB*)."""
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return paths[0] if paths else None
 
 
 def generate_launch_description():
     project_start_share = get_package_share_directory('project_start')
     config_dir = os.path.join(project_start_share, 'config')
 
-    # --- ЖЁСТКАЯ СХЕМА ПОРТОВ: ЛИДАР = /dev/ttyUSB0, GPS = /dev/ttyUSB1 ---
-    # Номера ttyUSB* назначает ядро по порядку опроса USB (физический порт
-    # хаба): какое устройство опрошено первым — то и ttyUSB0.
-    # Чтобы лидар ВСЕГДА был ttyUSB0, он должен быть физически воткнут в
-    # USB-порт, который опрашивается первым (сейчас там GPS — поменяйте
-    # кабели местами). Ниже — проверка при старте: если схема нарушена,
-    # стек НЕ запустится и выведет понятную инструкцию.
-    lidar_vendor = _tty_vendor_id('/dev/ttyUSB0')
-    gps_vendor = _tty_vendor_id('/dev/ttyUSB1')
-    if lidar_vendor != '10c4':
-        raise RuntimeError(
-            "ЛИДАР НЕ НА /dev/ttyUSB0! Сейчас ttyUSB0 = "
-            f"VID:{lidar_vendor or '?'} (ожидался 10c4 = CP210x, лидар).\n"
-            "  Схема: ЛИДАР = ttyUSB0, GPS = ttyUSB1.\n"
-            "  Что сделать: 1) выключите робота; 2) поменяйте USB-кабели "
-            "местами — ЛИДАР в тот USB-порт, где сейчас GPS (он опрашивается "
-            "первым и даёт ttyUSB0), GPS — в другой; 3) включите и проверьте:\n"
-            "    udevadm info /dev/ttyUSB0 | grep ID_VENDOR_ID   # 10c4\n"
-            "    udevadm info /dev/ttyUSB1 | grep ID_VENDOR_ID   # 067b"
-        )
-    if gps_vendor != '067b':
-        raise RuntimeError(
-            "GPS НЕ НА /dev/ttyUSB1! Сейчас ttyUSB1 = "
-            f"VID:{gps_vendor or '?'} (ожидался 067b = PL2303, GPS).\n"
-            "  Схема: ЛИДАР = ttyUSB0, GPS = ttyUSB1. Проверьте подключение "
-            "USB-устройств (см. инструкцию выше)."
-        )
-    lidar_port = '/dev/ttyUSB0'
-    gps_port = '/dev/ttyUSB1'
+    # --- порты USB (приоритет: udev-алиасы -> ttyUSB0/ttyUSB1) ---
+    # После установки 99-robot-usb.rules лидар всегда /dev/lidar, GPS /dev/gps.
+    # Если правила не установлены — используем ttyUSB0 (лидар) / ttyUSB1 (GPS)
+    # по вашей схеме.
+    lidar_port = _first_existing('/dev/lidar', '/dev/ttyUSB0')
+    gps_port = _first_existing('/dev/gps', '/dev/ttyUSB1')
 
 
     # ------------------------------------------------------------ launch-аргументы
@@ -110,8 +80,10 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------ GPS (стандартный nmea_navsat_driver)
-    # ЖЁСТКАЯ СХЕМА ПОРТОВ: ЛИДАР = /dev/ttyUSB0, GPS = /dev/ttyUSB1
-    # (проверяется выше — при нарушении стек не запустится)
+    # ВАЖНО (порты по вашей схеме): ЛИДАР = /dev/ttyUSB0, GPS = /dev/ttyUSB1.
+    # Если при загрузке USB-устройства получают другие номера (ttyUSB2,3...),
+    # сделайте udev-правила по VID/PID (см. README):
+    #   лидар CP210x (10c4:ea60) -> /dev/lidar,  GPS PL2303 (067b:2303) -> /dev/gps
     gps_node = Node(
         package='nmea_navsat_driver',
         executable='nmea_serial_driver',
@@ -168,17 +140,9 @@ def generate_launch_description():
             'robot_y_joint': 'robot_y',
             'acc_invert': True,            # фикс «вверх ногами» (ENU-модель ahrs)
 
-            # --- КУРС: инерциальный модуль (гироскоп) ---
-            # ВАЖНО: компас ВЫКЛЮЧЕН (use_magnetometer=False) — в этом монтаже
-            # он «залипает»: при вращении робота azim/MAG почти не меняются
-            # (поле моторов/металла доминирует над земным). Включённый компас
-            # тянул курс назад после поворотов (yaw 47°->4°). Курс — от
-            # гироскопа с автокомпенсацией дрейфа (drift_compensation).
-            # Включить компас можно после переноса датчика и проверки:
-            #   ros2 run robot_odom imu_check --mag-heading-live
-            # (вращать робота: ANG должен проходить 0..360°).
-            'yaw_source': 'imu',           # гироскоп+акселерометр (динамика)
-            'use_magnetometer': False,     # компас ВЫКЛЮЧЕН (залипает в монтаже)
+            # --- КУРС: слияние компаса (магнитометр) + инерциального модуля ---
+            'yaw_source': 'imu',           # EKF: гироскоп+акселерометр (динамика)
+            'use_magnetometer': True,      # компас ВКЛЮЧЁН
             'mag_yaw_only': True,          # компас влияет только на yaw (не на уровень)
             'mag_yaw_gain': 0.01,          # компл. фильтр: пост. времени ~2 с
                                            # (код нормирует по imu_rate, 50 Гц -> 25 Гц)
@@ -277,9 +241,7 @@ def generate_launch_description():
     # ------------------------------------------------------------ лидар
     # ЗАДЕРЖКА 10 сек: чтобы автокалибровка гироскопа odom_node (первые ~2 сек)
     # прошла БЕЗ вибрации лидара (иначе bias портится -> дрейф yaw).
-    # Параметры — из config/ydlidar_params.yaml (ЖЁСТКО /dev/ttyUSB0 +
-    # рабочий конфиг Tmini Plus: lidar_type 1, isSingleChannel false,
-    # sample_rate 9).
+    # Параметры — из config/ydlidar_params.yaml (порт /dev/ttyUSB0 + Tmini Plus).
     ydlidar_params = os.path.join(config_dir, 'ydlidar_params.yaml')
     ydlidar_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(

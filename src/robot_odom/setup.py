@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'odom_node = robot_odom.odom_node:main',
             'imu_check = robot_odom.imu_check:main',
+            'lidar_check = robot_odom.lidar_check:main',
             'waypoint_follower = robot_odom.waypoint_follower:main',
             'obstacle_avoider = robot_odom.obstacle_avoider:main',
         ],

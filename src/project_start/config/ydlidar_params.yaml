@@ -1,0 +1,39 @@
+# ============================================================
+# ydlidar_params.yaml — параметры драйвера YDLidar
+# ЖЁСТКАЯ СХЕМА ПОРТОВ: ЛИДАР = /dev/ttyUSB0, GPS = /dev/ttyUSB1
+# ============================================================
+# Номер ttyUSB* назначает ЯДРО по порядку опроса USB (физический
+# порт хаба): какое устройство опрошено первым — то ttyUSB0.
+# Чтобы лидар ВСЕГДА был ttyUSB0, он должен быть физически воткнут
+# в USB-порт, который опрашивается первым (см. start.launch.py —
+# там проверка при старте + инструкция, если схема нарушена).
+#
+# РАБОЧИЙ КОНФИГ для Tmini Plus (проверено на железе):
+#   baudrate 230400, lidar_type 1 (TRIANGLE!), isSingleChannel false,
+#   sample_rate 9, fixed_resolution true, intensity false.
+# НЕ ставьте lidar_type 0 (TOF) / isSingleChannel true / sample_rate 4 —
+# с ними лидар инициализируется, но отдаёт ВСЕ нули (ranges=0).
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    port: /dev/ttyUSB0
+    frame_id: laser_frame
+    ignore_array: ""
+    baudrate: 230400
+    lidar_type: 1
+    device_type: 0
+    sample_rate: 9
+    intensity_bit: 0
+    abnormal_check_count: 4
+    fixed_resolution: true
+    reversion: true
+    inverted: true
+    auto_reconnect: true
+    isSingleChannel: false
+    intensity: false
+    support_motor_dtr: false
+    angle_max: 180.0
+    angle_min: -180.0
+    range_max: 16.0
+    range_min: 0.02
+    frequency: 10.0
+    invalid_range_is_inf: false
