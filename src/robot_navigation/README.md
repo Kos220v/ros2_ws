@@ -1,0 +1,279 @@
+# robot_navigation — автономная уличная навигация по GNSS
+
+Пакет добавляет роботу возможность самостоятельно проезжать маршрут из
+нескольких точек, заданных координатами GPS, объезжая препятствия по лидару.
+
+Стек собран по официальному руководству Nav2
+[«Navigating Using GPS Localization»](https://docs.nav2.org/tutorials/docs/navigation2_with_gps.html)
+и его эталонному пакету `nav2_gps_waypoint_follower_demo`. Ничего
+самодельного в критичных местах нет: курс считает `imu_filter_madgwick`,
+положение — `robot_localization`, маршрут ведёт `nav2`.
+
+---
+
+## 1. Как это устроено
+
+```
+        ┌──────────── СЛОЙ ЖЕЛЕЗА (project_start/start.launch.py) ────────────┐
+        │                                                                     │
+ пульт ELRS ──> /cmd_vel/manual, /control_mode                                │
+ GNSS       ──> /gps/fix                                                      │
+ MPU6050    ──> /imu/data_raw                                                 │
+ магнитометр──> /imu/mag_raw                                                  │
+ энкодеры   ──> /joint_states ──> robot_odom ──> /odom                        │
+ лидар      ──> /scan ──> relay ──> /scan_reliable                            │
+        └─────────────────────────────────────────────────────────────────────┘
+                                     │
+        ┌──────────── ЛОКАЛИЗАЦИЯ (localization.launch.py) ───────────────────┐
+        │                                                                     │
+ /imu/mag_raw ─> mag_declination_node ─> /imu/mag   (снято склонение)         │
+ /imu/data_raw + /imu/mag ─> imu_filter_madgwick ─> /imu/data (курс ENU)      │
+                                                                              │
+ /odom + /imu/data            ─> ekf_filter_node_odom ─> TF odom→base_link    │
+                                                         /odometry/local      │
+ /odom + /imu/data + /odometry/gps ─> ekf_filter_node_map ─> TF map→odom      │
+                                                         /odometry/global     │
+ /gps/fix + /odometry/global  ─> navsat_transform ─> /odometry/gps            │
+                                                     сервис /fromLL           │
+        └─────────────────────────────────────────────────────────────────────┘
+                                     │
+        ┌──────────── НАВИГАЦИЯ (navigation.launch.py) ───────────────────────┐
+        │                                                                     │
+ planner_server (NavFn) + controller_server (Regulated Pure Pursuit)          │
+ costmap'ы по /scan_reliable, behavior_server (восстановление)                │
+ waypoint_follower ─ экшен /follow_gps_waypoints                              │
+        └─────────────────────────────────────────────────────────────────────┘
+                                     │
+ gps_waypoint_commander: читает YAML с точками и отдаёт их Nav2
+                                     │
+ velocity_smoother ─> /cmd_vel/auto ─> cmd_switcher ─> /cmd_vel ─> моторы
+```
+
+### Три вещи, которые важно понять
+
+**Почему два EKF, а не один.** Локальный фильтр (`odom → base_link`) даёт
+гладкую и непрерывную оценку — по ней контроллер ведёт робота, и она не
+дёргается. Глобальный (`map → odom`) привязывает робота к местности по GPS и
+может скачком сдвинуться на пару метров при обновлении фикса. Разделение —
+требование архитектуры Nav2: скачок происходит в трансформе `map → odom`
+и не рвёт траекторию под колёсами.
+
+**Почему магнитное склонение снимается до фильтра.** Магнитометр смотрит на
+магнитный полюс, GPS работает от географического. Разница в средней полосе —
+11–13°. У `navsat_transform` есть параметр `magnetic_declination_radians`, но
+он влияет только на разовую привязку `map ↔ UTM`; сам курс в EKF остался бы
+магнитным, и фильтр вечно боролся бы сам с собой (позиция в истинном ENU,
+курс в магнитном). Поэтому `mag_declination_node` доворачивает вектор поля
+**до** фильтра ориентации, и весь стек работает в одной системе отсчёта.
+
+**Почему Nav2 не подключён к `/cmd_vel` напрямую.** Выход идёт в
+`/cmd_vel/auto`, а `cmd_switcher` отдаёт приоритет пульту. Оператор в любой
+момент перехватывает управление, просто двинув стик. Прямое подключение
+убило бы эту страховку.
+
+---
+
+## 2. Установка зависимостей
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-jazzy-robot-localization \
+  ros-jazzy-imu-filter-madgwick \
+  ros-jazzy-nmea-navsat-driver \
+  ros-jazzy-navigation2 \
+  ros-jazzy-nav2-bringup \
+  ros-jazzy-nav2-regulated-pure-pursuit-controller \
+  ros-jazzy-nav2-simple-commander
+```
+
+Сборка:
+
+```bash
+cd ~/ros2_ws
+colcon build --symlink-install --packages-select \
+    robot_navigation project_start robot_odom
+source install/setup.bash
+```
+
+---
+
+## 3. Ввод в эксплуатацию
+
+Порядок обязателен. Каждый шаг проверяется отдельно — так вы поймаете
+проблему в гараже, а не в поле.
+
+### Шаг 1. Калибровка магнитометра (обязательно)
+
+Это самый частый источник неудач. Некалиброванный магнитометр врёт на
+десятки градусов, и никакая настройка Nav2 это не исправит.
+
+```bash
+# Запустите только железо
+ros2 launch project_start start.launch.py
+
+# В другом терминале смотрите сырое поле
+ros2 topic echo /imu/mag_raw
+```
+
+Медленно поворачивайте робота вокруг вертикальной оси на полный оборот,
+записывая минимумы и максимумы по осям X и Y. Затем посчитайте:
+
+```
+hard_iron_x = (max_x + min_x) / 2      # смещение (в тех же единицах, что и вывод)
+hard_iron_y = (max_y + min_y) / 2
+scale_x     = ((max_x - min_x) + (max_y - min_y)) / 2 / (max_x - min_x)
+scale_y     = ((max_x - min_x) + (max_y - min_y)) / 2 / (max_y - min_y)
+```
+
+Полученные значения впишите в `project_start/launch/start.launch.py`
+в блок `compass_node` (параметры `mag_hard_iron_*`, `mag_scale_*`).
+
+> Калибровку делайте **на собранном роботе, с включённой силовой частью** —
+> корпус, аккумулятор и провода искажают поле, и калибровать датчик отдельно
+> от робота бессмысленно.
+
+### Шаг 2. Магнитное склонение
+
+Откройте [калькулятор NOAA](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml),
+введите координаты места испытаний, возьмите поле **Declination**.
+Восточное склонение — положительное число.
+
+### Шаг 3. Проверка локализации (без движения)
+
+```bash
+ros2 launch robot_navigation bringup.launch.py \
+    declination_deg:=11.9 \
+    use_navigation:=false \
+    use_commander:=false
+```
+
+Вынесите робота на открытое место, дождитесь фикса и проверьте:
+
+```bash
+ros2 run robot_navigation nav_preflight_check
+```
+
+Утилита за 15 секунд напечатает чеклист: частоты всех топиков, наличие
+фикса и его точность, собранность TF-дерева, работу `navsat_transform`.
+Отдельно она покажет **азимут по компасу** — сверьте его с компасом в
+телефоне. Расхождение больше 15° означает, что калибровка или склонение
+заданы неверно, и дальше идти нельзя.
+
+### Шаг 4. Проверка курса в движении
+
+Поездите роботом с пульта вперёд-назад и по кругу, наблюдая в RViz
+(`Fixed Frame: map`) за фреймом `base_link`. Стрелка робота должна ехать в ту
+же сторону, куда он реально едет. Если робот едет вперёд, а маркер уходит
+вбок или назад — курс всё ещё неверен, возвращайтесь к шагу 1.
+
+### Шаг 5. Запись маршрута
+
+```bash
+ros2 run robot_navigation gps_waypoint_logger \
+    --ros-args -p output_file:=/home/pi/route.yaml
+```
+
+Катайте робота пультом, в каждой нужной точке останавливайтесь и вызывайте:
+
+```bash
+ros2 service call /gps_waypoint_logger/log_waypoint std_srvs/srv/Trigger
+```
+
+Ошиблись — `ros2 service call /gps_waypoint_logger/undo_waypoint std_srvs/srv/Trigger`.
+
+> Запись собственным приёмником робота точнее, чем координаты с онлайн-карты:
+> систематическая ошибка приёмника взаимно сокращается на записи и на
+> проезде. Снимки в картографических сервисах смещены относительно
+> реальности на единицы метров.
+
+### Шаг 6. Первый автономный заезд
+
+```bash
+ros2 launch robot_navigation bringup.launch.py \
+    declination_deg:=11.9 \
+    waypoints_file:=/home/pi/route.yaml
+```
+
+Робот **не поедет сам**. Держите палец на пульте и запустите маршрут:
+
+```bash
+ros2 service call /gps_waypoint_commander/start_route std_srvs/srv/Trigger
+```
+
+или переведите тумблер режимов на пульте в положение **AUTO**.
+
+Немедленная остановка — двинуть любой стик пульта (у ручного управления
+приоритет выше) либо:
+
+```bash
+ros2 service call /gps_waypoint_commander/cancel_route std_srvs/srv/Trigger
+```
+
+**Первый заезд проводите на пустой площадке**, а не на улице с людьми.
+
+---
+
+## 4. Настройка под свой робот
+
+| Что менять | Где | Зачем |
+|---|---|---|
+| `robot_radius: 0.45` | `nav2_params.yaml`, оба костмапа | Габарит вашего шасси. Занижение → робот цепляет препятствия |
+| `desired_linear_vel: 0.6` | `nav2_params.yaml`, `FollowPath` | Крейсерская скорость, м/с |
+| `xy_goal_tolerance: 1.5` | `nav2_params.yaml`, `general_goal_checker` | Допуск прибытия. Для RTK-приёмника можно 0.3 |
+| `width/height: 60` | `nav2_params.yaml`, `global_costmap` | Окно планировщика. Должно быть заметно больше расстояния между точками |
+| `lookahead_dist: 1.0` | `nav2_params.yaml`, `FollowPath` | Больше — плавнее, меньше — точнее по траектории |
+| `declination_deg` | аргумент launch | Магнитное склонение вашей местности |
+| `gain: 0.1` | `imu_filter.yaml` | Уменьшите до 0.05, если курс дрожит от вибрации гусениц |
+
+---
+
+## 5. Диагностика
+
+**Робот кружит вокруг точки и не может доехать.**
+Допуск прибытия меньше точности GNSS. Увеличьте `xy_goal_tolerance`.
+
+**Робот систематически уходит вбок от прямой между точками.**
+Не учтено или неверно задано магнитное склонение (`declination_deg`).
+
+**Робот едет в противоположную сторону.**
+Перепутаны оси магнитометра. Проверьте `mag_yaw_offset_deg` и `mag_z_invert`
+в `compass_control`, а также `world_frame: "enu"` в `imu_filter.yaml`.
+
+**Nav2 отклоняет маршрут («Nav2 ОТКЛОНИЛ маршрут»).**
+Недоступен сервис `/fromLL` — не поднялся `navsat_transform` или он ещё не
+получил GPS-фикс. Проверьте: `ros2 service list | grep fromLL`.
+
+**Маркер робота прыгает между двумя позициями в RViz.**
+Трансформ `odom → base_link` публикуют двое. Убедитесь, что `publish_tf`
+выключен и у `robot_odom`, и у `kolesa_control`.
+
+**Костмап зарастает призрачными препятствиями.**
+Уберите `inf_is_valid: true` из источника `scan` — на улице лучи,
+не встретившие препятствий, возвращают бесконечность и должны очищать карту.
+
+**Nav2 «не тянет» на Raspberry Pi 4.**
+Снизьте `controller_frequency` до 10 Гц, `update_frequency` локального
+костмапа до 3 Гц и разрешение глобального до `0.15`.
+
+Полезные команды:
+
+```bash
+ros2 run tf2_tools view_frames                # схема TF-дерева в PDF
+ros2 topic hz /gps/fix /imu/data /odom        # живы ли датчики
+ros2 topic echo /gps/filtered                 # отфильтрованная позиция в WGS84
+ros2 lifecycle get /waypoint_follower         # поднялся ли Nav2
+```
+
+---
+
+## 6. Что стало с прежней реализацией
+
+Старые узлы `robot_odom/waypoint_follower` и `robot_odom/obstacle_avoider`
+сохранены и **впервые собираются** — раньше они отсутствовали в
+`setup.py`, поэтому `ros2 run` их не находил. Они остаются запасным
+лёгким вариантом, но штатный маршрут теперь едет через Nav2: реактивный
+объезд препятствий не умеет планировать путь и застревает в тупиках,
+а подобранные вручную поправки курса (`goal_yaw_offset_deg`,
+`angular_z_sign`) компенсировали как раз те ошибки во фреймах, которые
+здесь устранены.
