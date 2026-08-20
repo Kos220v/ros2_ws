@@ -60,11 +60,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     TimerAction,
 )
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -253,20 +252,43 @@ def launch_setup(context, *args, **kwargs):
     # настройками по умолчанию (неверный порт и модель).
     ydlidar_params = os.path.join(project_start_share, 'params',
                                   'ydlidar_params.yaml')
-    ydlidar_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory('ydlidar_ros2_driver'),
-                'launch', 'ydlidar_launch.py'
-            )
-        ),
-        launch_arguments={'params_file': ydlidar_params}.items(),
+
+    # Запускаем драйвер напрямую, а не через ydlidar_launch.py из пакета
+    # производителя. Две причины:
+    #
+    #  1. Тот launch-файл принимает ТОЛЬКО путь к params_file, и порт в нём
+    #     жёстко прописан как /dev/lidar. Без udev-правила такого устройства
+    #     нет, лидар не открывается, а сообщение об ошибке тонет в общем
+    #     потоке логов. Здесь порт подставляется автоматически:
+    #     /dev/lidar, если правило настроено, иначе /dev/ttyUSB0.
+    #
+    #  2. Там узел объявлен как LifecycleNode, хотя в исходниках драйвера это
+    #     обычный rclcpp::Node (ydlidar_ros2_driver_node.cpp, строка 38).
+    #     Несоответствие безобидно, но сбивает с толку: кажется, будто узел
+    #     нужно вручную переводить в active, хотя он публикует сразу.
+    #
+    # Имя узла обязано совпадать с ключом в ydlidar_params.yaml,
+    # иначе параметры из файла не применятся.
+    ydlidar_node = Node(
+        package='ydlidar_ros2_driver',
+        executable='ydlidar_ros2_driver_node',
+        name='ydlidar_ros2_driver_node',
+        output='screen',
+        emulate_tty=True,
+        parameters=[
+            ydlidar_params,
+            {'port': lidar_port},   # переопределяет port из файла
+        ],
     )
+
     # period — обычное число, вычисленное выше. Подстановку сюда класть нельзя
     # (см. большой комментарий в начале файла).
     ydlidar_delayed = TimerAction(
         period=lidar_delay,
-        actions=[ydlidar_launch],
+        actions=[
+            LogInfo(msg=f'Запуск лидара на порту {lidar_port}'),
+            ydlidar_node,
+        ],
     )
 
     # /scan публикуется с QoS BEST_EFFORT; costmap Nav2 это устраивает, но

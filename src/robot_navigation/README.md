@@ -261,6 +261,25 @@ ros2 service call /gps_waypoint_commander/cancel_route std_srvs/srv/Trigger
 не поднимается**, и Nav2 остаётся без данных о препятствиях. Проверить, что
 лидар жив: `ros2 topic hz /scan`.
 
+**Лидар не открывается: `cannot bind to the specified serial port /dev/lidar`**
+Не настроено udev-правило. Начиная с текущей версии `start.launch.py` сам
+подставляет `/dev/ttyUSB0`, если `/dev/lidar` отсутствует, — при запуске
+он печатает, какой порт выбран. Чтобы закрепить имена намертво, создайте
+`/etc/udev/rules.d/99-robot-usb.rules`:
+
+```
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="lidar"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="gps"
+```
+
+затем `sudo udevadm control --reload-rules && sudo udevadm trigger`.
+Посмотреть свои VID:PID можно командой `lsusb`.
+
+**При сборке `ydlidar_ros2_driver` выводит warning про unused parameter**
+Это не ошибка, а предупреждения компилятора в коде производителя лидара.
+Сборка при этом успешна. Ориентируйтесь на итоговую строку
+`Summary: N packages finished` — если рядом нет слова `failed`, всё в порядке.
+
 **Nav2 «не тянет» на Raspberry Pi 4.**
 Снизьте `controller_frequency` до 10 Гц, `update_frequency` локального
 костмапа до 3 Гц и разрешение глобального до `0.15`.
