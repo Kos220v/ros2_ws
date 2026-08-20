@@ -1,0 +1,13 @@
+navsat_transform_node:
+  ros__parameters:
+    frequency: 10.0
+    delay: 3.0
+    magnetic_declination_radians: 0.0   # Узнать для вашего региона
+    yaw_offset: 0.0
+    broadcast_cartesian_transform: true
+    broadcast_utm_transform_parent: odom
+    broadcast_utm_transform_child: utm
+    publish_filtered_gps: true
+    use_odometry_yaw: true
+    wait_for_datum: true
+    datum: [56.299145, 43.923061, 0.0]  # Ваши начальные GPS координаты (широта, долгота, высота)

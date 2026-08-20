@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mpu6050_control</name>
+  <version>0.0.0</version>
+  <description>MPU6050/MPU6500 raw IMU driver over I2C (smbus)</description>
+  <maintainer email="admin@todo.todo">admin</maintainer>
+  <license>TODO: License declaration</license>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <!-- ИСПРАВЛЕНО: код использует модуль smbus напрямую (self.bus = smbus.SMBus(...)),
+       а не adafruit-circuitpython-mpu6050. Старые exec_depend ниже были лишними
+       (не соответствовали фактическому коду) и убраны. -->
+  <exec_depend>python3-smbus</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
