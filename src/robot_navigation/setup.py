@@ -32,8 +32,13 @@ setup(
             'gps_waypoint_commander = robot_navigation.gps_waypoint_commander:main',
             # Запись маршрута: сохраняет текущую позицию робота в YAML
             'gps_waypoint_logger = robot_navigation.gps_waypoint_logger:main',
-            # Учёт магнитного склонения: /imu/mag_raw -> /imu/mag
+            # Обработка магнитометра: калибровка, угол монтажа, склонение
+            # (/imu/mag_raw -> /imu/mag)
             'mag_declination_node = robot_navigation.mag_declination_node:main',
+            # Калибровка магнитометра вращением робота
+            'mag_calibrator = robot_navigation.mag_calibrator:main',
+            # Сверка курса робота с реальным азимутом
+            'heading_check = robot_navigation.heading_check:main',
             # Диагностика готовности стека перед выездом
             'nav_preflight_check = robot_navigation.nav_preflight_check:main',
         ],

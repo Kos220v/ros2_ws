@@ -46,6 +46,7 @@ def generate_launch_description():
 
     ekf_params = os.path.join(config_dir, 'dual_ekf_navsat.yaml')
     imu_filter_params = os.path.join(config_dir, 'imu_filter.yaml')
+    mag_calib_params = os.path.join(config_dir, 'mag_calibration.yaml')
 
     # ------------------------------------------------------------- аргументы
     declination_arg = DeclareLaunchArgument(
@@ -70,18 +71,26 @@ def generate_launch_description():
         executable='mag_declination_node',
         name='mag_declination_node',
         output='screen',
-        parameters=[{
-            # Тип указан явно: launch передаёт аргументы командной строки
-            # строками и сам угадывает тип. При declination_deg:=12 он бы
-            # получил целое число, а узел объявил параметр как float —
-            # запуск упал бы с ошибкой несовпадения типов. При 17.21 всё
-            # сработало бы случайно. ParameterValue убирает эту лотерею.
-            'declination_deg': ParameterValue(
-                LaunchConfiguration('declination_deg'), value_type=float),
-            'input_topic': '/imu/mag_raw',
-            'output_topic': '/imu/mag',
-            'use_sim_time': use_sim_time,
-        }],
+        parameters=[
+            # Калибровка магнитометра — свойство робота, живёт в файле.
+            mag_calib_params,
+            {
+                # Склонение — свойство МЕСТНОСТИ, поэтому задаётся аргументом
+                # запуска и намеренно перекрывает значение из файла
+                # (словарь идёт после файла, значит имеет приоритет).
+                #
+                # Тип указан явно: launch передаёт аргументы командной строки
+                # строками и сам угадывает тип. При declination_deg:=12 он бы
+                # получил целое число, а узел объявил параметр как float —
+                # запуск упал бы с ошибкой несовпадения типов. При 11.9 всё
+                # сработало бы случайно. ParameterValue убирает эту лотерею.
+                'declination_deg': ParameterValue(
+                    LaunchConfiguration('declination_deg'), value_type=float),
+                'input_topic': '/imu/mag_raw',
+                'output_topic': '/imu/mag',
+                'use_sim_time': use_sim_time,
+            },
+        ],
     )
 
     # ------------------------------------------------- фильтр ориентации (AHRS)

@@ -53,6 +53,13 @@ class PreflightCheck(Node):
         super().__init__('nav_preflight_check')
 
         self.declare_parameter('duration', 15.0)
+        # Nav2 можно намеренно не запускать (use_navigation:=false),
+        # когда отлаживается только локализация. Тогда его отсутствие
+        # не должно выглядеть как поломка.
+        self.declare_parameter('expect_nav2', True)
+
+        self._failures = []
+        self._warnings = []
 
         self._counts = {}
         self._last = {}
@@ -88,14 +95,16 @@ class PreflightCheck(Node):
         self.create_subscription(msg_type, topic, cb, qos)
 
     # ------------------------------------------------------------------ вывод
-    @staticmethod
-    def _line(ok, title, detail=''):
+    def _line(self, ok, title, detail=''):
+        """Печатает пункт чеклиста и запоминает результат для итога."""
         if ok is True:
             mark = f'{GREEN}[ OK ]{RESET}'
         elif ok is None:
             mark = f'{YELLOW}[ ?? ]{RESET}'
+            self._warnings.append(title)
         else:
             mark = f'{RED}[FAIL]{RESET}'
+            self._failures.append(title)
         print(f'{mark} {title}')
         if detail:
             for row in detail.split('\n'):
@@ -117,11 +126,30 @@ class PreflightCheck(Node):
         self._check_nav2()
         self._check_heading_consistency()
 
-        print('=' * 72)
-        print('  Все пункты OK -> можно переводить пульт в AUTO.')
-        print('=' * 72 + '\n')
-
+        self._summary()
         rclpy.shutdown()
+
+    def _summary(self):
+        print()
+        print('=' * 72)
+        if self._failures:
+            print(f'  {RED}ИТОГ: провалено пунктов — '
+                  f'{len(self._failures)}{RESET}')
+            for title in self._failures:
+                print(f'    - {title}')
+            print()
+            print('  ВЫЕЗЖАТЬ НЕЛЬЗЯ, пока это не устранено.')
+        elif self._warnings:
+            print(f'  {YELLOW}ИТОГ: замечаний — {len(self._warnings)}{RESET}')
+            for title in self._warnings:
+                print(f'    - {title}')
+            print()
+            print('  Критичных отказов нет, но перечисленное стоит проверить.')
+        else:
+            print(f'  {GREEN}ИТОГ: все пункты пройдены.{RESET}')
+            print('  Можно переводить пульт в AUTO.')
+        print('=' * 72)
+        print()
 
     def _check_sensors(self, duration):
         print('\n--- Датчики ---')
@@ -246,13 +274,24 @@ class PreflightCheck(Node):
 
     def _check_nav2(self):
         print('\n--- Nav2 ---')
+        expect = bool(self.get_parameter('expect_nav2').value)
+
         if self._client.wait_for_server(timeout_sec=5.0):
             self._line(True, 'Экшен /follow_gps_waypoints доступен')
+        elif not expect:
+            self._line(
+                None, 'Nav2 не запущен (проверка отключена параметром)',
+                'Это ожидаемо при expect_nav2:=false.')
         else:
             self._line(
                 False, 'Экшен /follow_gps_waypoints недоступен',
-                'Nav2 не поднялся или lifecycle-менеджер не активировал узлы.\n'
-                'Смотрите: ros2 lifecycle get /waypoint_follower')
+                'Если вы запускали bringup с use_navigation:=false — это\n'
+                'ожидаемо, Nav2 просто не поднимали. Тогда запустите проверку\n'
+                'так: ros2 run robot_navigation nav_preflight_check \\\n'
+                '        --ros-args -p expect_nav2:=false\n'
+                '\n'
+                'Иначе Nav2 не поднялся или lifecycle-менеджер не активировал\n'
+                'узлы. Смотрите: ros2 lifecycle get /waypoint_follower')
 
     def _check_heading_consistency(self):
         print('\n--- Согласованность курса и GPS ---')
