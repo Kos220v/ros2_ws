@@ -91,9 +91,20 @@ sudo apt install -y \
 
 ```bash
 cd ~/ros2_ws
-colcon build --symlink-install --packages-select \
-    robot_navigation project_start robot_odom
+./rebuild.sh
 source install/setup.bash
+```
+
+`rebuild.sh` удаляет прошлые результаты сборки и собирает всё заново одним
+режимом. Это важно: смешивание `colcon build` и `colcon build
+--symlink-install` ломает метаданные Python-пакетов, причём сборка при этом
+проходит успешно, а падает уже запуск (см. раздел «Диагностика»).
+
+Если предпочитаете собирать вручную, держитесь одного режима и не
+чередуйте их:
+
+```bash
+colcon build            # обычный режим, надёжнее всего
 ```
 
 ---
@@ -279,6 +290,26 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", SYMLINK+="g
 Это не ошибка, а предупреждения компилятора в коде производителя лидара.
 Сборка при этом успешна. Ориентируйтесь на итоговую строку
 `Summary: N packages finished` — если рядом нет слова `failed`, всё в порядке.
+
+**Узел падает: `PackageNotFoundError: No package metadata was found for ...`**
+Смешаны два режима сборки. `colcon build` копирует файлы, а
+`colcon build --symlink-install` ставит ссылки; вперемешку они оставляют
+в `install/` исполняемый файл от одного режима и метаданные Python от
+другого. Коварство в том, что **сборка проходит успешно и молча**, а
+падает только запуск, причём не у всех пакетов сразу. Лечится чистой
+пересборкой:
+
+```bash
+cd ~/ros2_ws
+./rebuild.sh          # удалит build/ install/ log/ и соберёт заново
+source install/setup.bash
+```
+
+Скрипт заодно вычищает `*.egg-info` из `src/` — эти файлы остаются после
+режима ссылок, переживают удаление `install/` и воспроизводят поломку
+заново. Если проблема повторится, соберите обычным режимом (`./rebuild.sh`
+без аргументов) — он надёжнее, хотя и требует пересборки после каждой
+правки Python-файлов.
 
 **Nav2 «не тянет» на Raspberry Pi 4.**
 Снизьте `controller_frequency` до 10 Гц, `update_frequency` локального
