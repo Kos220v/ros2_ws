@@ -163,10 +163,19 @@ class PreflightCheck(Node):
         }
         hints = {
             '/gps/fix': 'Проверьте питание и порт GNSS (nmea_navsat_driver).',
-            '/imu/data_raw': 'Не запущен mpu6050_control либо не сделан '
-                             'ремап /imu/data -> /imu/data_raw.',
+            '/imu/data_raw': 'Датчик MPU6050 не отвечает по шине I2C.\n'
+                             'Проверьте по порядку:\n'
+                             '  1) sudo i2cdetect -y 1  — должен быть адрес 0x68\n'
+                             '  2) если 0x68 нет — питание и провода датчика\n'
+                             '  3) если 0x68 есть — ищите в логе запуска строки\n'
+                             '     mpu6050_control: узел сам повторяет попытки\n'
+                             '     подключения каждые 5 секунд и пишет причину',
             '/imu/mag': 'Не запущен compass_control или mag_declination_node.',
-            '/imu/data': 'Не запущен imu_filter_madgwick — курса не будет.',
+            '/imu/data': 'Фильтр ориентации молчит. Он не выдаёт ничего, пока\n'
+                         'нет ВХОДНЫХ данных, поэтому сначала разберитесь\n'
+                         'с /imu/data_raw выше — этот пункт, скорее всего,\n'
+                         'следствие. Если /imu/data_raw идёт, а /imu/data нет,\n'
+                         'значит не запущен imu_filter_madgwick.',
             '/odom': 'Не запущен robot_odom (или kolesa_control не публикует '
                      '/joint_states).',
             '/scan_reliable': 'Не запущен лидар или relay_reliable.',

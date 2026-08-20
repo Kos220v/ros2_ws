@@ -175,6 +175,12 @@ def launch_setup(context, *args, **kwargs):
         executable='mpu6050_control',
         name='mpu6050_control',
         output='screen',
+        # Сеть безопасности на случай жёсткого падения процесса. Сам узел
+        # переживает сбои шины I2C и переподключается без перезапуска,
+        # но без датчика курса уличная навигация невозможна, поэтому
+        # подстраховка здесь оправдана.
+        respawn=True,
+        respawn_delay=5.0,
         parameters=[{
             'frame_id': 'imu_link',
             'publish_rate_hz': 50.0,
@@ -196,6 +202,8 @@ def launch_setup(context, *args, **kwargs):
         executable='compass_control',
         name='compass_control',
         output='screen',
+        respawn=True,
+        respawn_delay=5.0,
         parameters=[{
             'frame_id': 'imu_link',
             'publish_rate': 25.0,
