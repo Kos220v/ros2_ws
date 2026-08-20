@@ -8,7 +8,7 @@ start.launch.py — СЛОЙ ЖЕЛЕЗА: датчики, приводы, TF-д
 всё сразу, и отладить что-то одно было невозможно. Теперь стек разделён на три
 слоя, каждый из которых можно запустить и проверить отдельно:
 
-    project_start/start.launch.py        <- железо (этот файл)
+    project_start/start.launch.py            <- железо (этот файл)
     robot_navigation/localization.launch.py  <- EKF + GPS + курс
     robot_navigation/navigation.launch.py    <- Nav2
 
@@ -34,6 +34,23 @@ start.launch.py — СЛОЙ ЖЕЛЕЗА: датчики, приводы, TF-д
 robot_odom или kolesa_control, трансформ начнут публиковать двое, и робот
 в RViz будет прыгать между двумя позициями. Поэтому publish_tf: False
 проставлен явно и его нельзя менять.
+
+ПОЧЕМУ ЗДЕСЬ OpaqueFunction, А НЕ ПРОСТОЙ СПИСОК ДЕЙСТВИЙ
+---------------------------------------------------------
+У TimerAction есть неочевидная ловушка: значение period вычисляется НЕ в
+момент разбора launch-файла, а позже, в асинхронной задаче. Если передать
+туда LaunchConfiguration, а сам launch-файл подключён через
+IncludeLaunchDescription внутри GroupAction (именно так делает
+bringup.launch.py), то к моменту вычисления область видимости группы уже
+закрыта, и запуск падает с ошибкой:
+
+    SubstitutionFailure: launch configuration 'lidar_delay' does not exist
+
+Внешне это выглядит безобидно — остальные узлы стартуют, — но лидар
+не поднимается, и Nav2 остаётся без данных о препятствиях.
+
+Решение: OpaqueFunction получает context и позволяет вычислить аргумент
+СРАЗУ, превратив его в обычное число ещё до создания TimerAction.
 """
 
 import os
@@ -41,7 +58,12 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    TimerAction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -56,7 +78,9 @@ def _first_existing(*paths):
     return paths[0] if paths else None
 
 
-def generate_launch_description():
+def launch_setup(context, *args, **kwargs):
+    """Собирает список узлов. context позволяет вычислить аргументы сразу."""
+
     project_start_share = get_package_share_directory('project_start')
 
     # Порты USB. Настоятельно рекомендуется прописать udev-правила по VID/PID,
@@ -66,11 +90,10 @@ def generate_launch_description():
     lidar_port = _first_existing('/dev/lidar', '/dev/ttyUSB0')
     gps_port = _first_existing('/dev/gps', '/dev/ttyUSB1')
 
-    lidar_delay_arg = DeclareLaunchArgument(
-        'lidar_delay', default_value='10.0',
-        description='Задержка старта лидара, сек: даёт гироскопу '
-                    'откалиброваться в тишине, без вибрации от мотора лидара',
-    )
+    # Вычисляем задержку ПРЯМО СЕЙЧАС и получаем обычный float.
+    # Дальше в TimerAction уходит число, а не подстановка.
+    lidar_delay = float(
+        LaunchConfiguration('lidar_delay').perform(context))
 
     # ------------------------------------------------------------ пульт ELRS
     elrs_node = Node(
@@ -104,8 +127,6 @@ def generate_launch_description():
             # Фрейм обязан совпадать с именем звена в URDF: navsat_transform
             # ищет смещение антенны относительно base_link именно по нему.
             'frame_id': 'gps_link',
-            # Не публиковать сообщения без фикса: пустые NavSatFix только
-            # сбивают EKF с толку.
             'useRMC': False,
         }],
         remappings=[
@@ -241,8 +262,10 @@ def generate_launch_description():
         ),
         launch_arguments={'params_file': ydlidar_params}.items(),
     )
+    # period — обычное число, вычисленное выше. Подстановку сюда класть нельзя
+    # (см. большой комментарий в начале файла).
     ydlidar_delayed = TimerAction(
-        period=LaunchConfiguration('lidar_delay'),
+        period=lidar_delay,
         actions=[ydlidar_launch],
     )
 
@@ -256,9 +279,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    return LaunchDescription([
-        lidar_delay_arg,
-
+    return [
         elrs_node,
         gps_node,
         kolesa_control_node,
@@ -269,4 +290,17 @@ def generate_launch_description():
         cmd_mux_node,
         relay_node,
         ydlidar_delayed,
+    ]
+
+
+def generate_launch_description():
+    lidar_delay_arg = DeclareLaunchArgument(
+        'lidar_delay', default_value='10.0',
+        description='Задержка старта лидара, сек: даёт гироскопу '
+                    'откалиброваться в тишине, без вибрации от мотора лидара',
+    )
+
+    return LaunchDescription([
+        lidar_delay_arg,
+        OpaqueFunction(function=launch_setup),
     ])

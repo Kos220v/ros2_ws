@@ -3,6 +3,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import ParameterDescriptor
 from sensor_msgs.msg import MagneticField
 from std_msgs.msg import Header
 
@@ -29,7 +30,23 @@ class CompassNode(Node):
         self.declare_parameter('mag_scale_x', 1.0)
         self.declare_parameter('mag_scale_y', 1.0)
         self.declare_parameter('mag_scale_z', 1.0)
-        self.declare_parameter('mag_lsb_to_tesla', None)  # если None, определяется автоматически
+        # Коэффициент перевода LSB -> Тесла.
+        #
+        # Значение по умолчанию не задано намеренно: если параметр не указан,
+        # узел сам определит коэффициент по типу найденной микросхемы
+        # (QMC5883L или HMC5883L) — см. блок автоопределения ниже.
+        #
+        # ParameterDescriptor(dynamic_typing=True) здесь обязателен. Без него
+        # объявление параметра со значением None считается устаревшим, и rclpy
+        # печатает предупреждение "declaring a parameter only providing its
+        # name is deprecated". В будущих версиях ROS это станет ошибкой.
+        self.declare_parameter(
+            'mag_lsb_to_tesla', None,
+            ParameterDescriptor(
+                dynamic_typing=True,
+                description='Коэффициент LSB -> Тесла. '
+                            'Если не задан, определяется автоматически '
+                            'по типу микросхемы магнитометра.'))
         self.declare_parameter('frame_id', 'imu_link')
         self.declare_parameter('publish_rate', 10.0)      # Гц
         self.declare_parameter('topic', '/imu/mag')

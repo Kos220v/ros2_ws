@@ -37,6 +37,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -70,7 +71,13 @@ def generate_launch_description():
         name='mag_declination_node',
         output='screen',
         parameters=[{
-            'declination_deg': LaunchConfiguration('declination_deg'),
+            # Тип указан явно: launch передаёт аргументы командной строки
+            # строками и сам угадывает тип. При declination_deg:=12 он бы
+            # получил целое число, а узел объявил параметр как float —
+            # запуск упал бы с ошибкой несовпадения типов. При 17.21 всё
+            # сработало бы случайно. ParameterValue убирает эту лотерею.
+            'declination_deg': ParameterValue(
+                LaunchConfiguration('declination_deg'), value_type=float),
             'input_topic': '/imu/mag_raw',
             'output_topic': '/imu/mag',
             'use_sim_time': use_sim_time,
