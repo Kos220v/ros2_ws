@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<!--
+  URDF гусеничного робота — упрощённый (без визуального тела).
+
+  СИСТЕМА КООРДИНАТ (REP-103): X — вперёд, Y — влево, Z — вверх.
+
+  Вариант Б: раздельные фреймы для магнитометра и GPS-антенны.
+  Оба смонтированы в разных местах робота.
+-->
+<robot name="tracked_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Материал для визуализации датчиков -->
+  <material name="black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+
+  <!-- ============ корень TF ============ -->
+  <link name="base_link"/>
+
+  <!-- ============ координаты датчиков (ПРАВЬТЕ ЗДЕСЬ) ============ -->
+  <xacro:property name="imu_xyz"  value="0.135 -0.275 0.4" />
+  <xacro:property name="mag_xyz"  value="0.11  -0.085 0.4" />   <!-- магнитометр -->
+  <xacro:property name="gps_xyz"  value="0.10  -0.100 0.42" /> <!-- GPS-антенна -->
+  <xacro:property name="laser_xyz" value="-0.21  0.16  0.55" />
+
+  <!-- ============ MPU6050 ============ -->
+  <link name="imu_link">
+    <visual>
+      <geometry><box size="0.02 0.02 0.01"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+  <joint name="base_to_imu" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <origin xyz="${imu_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ Магнитометр (отдельный модуль) ============ -->
+  <link name="mag_link">
+    <visual>
+      <geometry><box size="0.025 0.025 0.01"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+  <joint name="base_to_mag" type="fixed">
+    <parent link="base_link"/>
+    <child  link="mag_link"/>
+    <origin xyz="${mag_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ GPS-антенна (отдельный модуль) ============ -->
+  <link name="gps_link">
+    <visual>
+      <geometry><box size="0.03 0.03 0.01"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+  <joint name="base_to_gps" type="fixed">
+    <parent link="base_link"/>
+    <child  link="gps_link"/>
+    <origin xyz="${gps_xyz}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ============ Лидар ============ -->
+  <link name="laser_frame">
+    <visual>
+      <geometry><cylinder radius="0.04" length="0.05"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+  <joint name="base_to_laser" type="fixed">
+    <parent link="base_link"/>
+    <child  link="laser_frame"/>
+    <origin xyz="${laser_xyz}" rpy="0 0 0"/>
+  </joint>
+
+</robot>
