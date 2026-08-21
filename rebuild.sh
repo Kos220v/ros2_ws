@@ -91,6 +91,33 @@ if [[ ":${AMENT_PREFIX_PATH:-}:" == *":$WS_DIR/install"* ]]; then
     [[ "$answer" =~ ^[Yy]$ ]] || exit 1
 fi
 
+# --- Какая версия кода собирается ------------------------------------------
+# Частая и обидная ситуация: правка выложена в репозиторий, но на роботе
+# не выполнен git pull, и человек продолжает ловить уже исправленную
+# ошибку. Печатаем коммит явно, чтобы это было видно сразу.
+if git -C "$WS_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    BRANCH="$(git -C "$WS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    COMMIT="$(git -C "$WS_DIR" log -1 --format='%h %s' 2>/dev/null)"
+    echo "Ветка:  $BRANCH"
+    echo "Коммит: $COMMIT"
+
+    # Есть ли на сервере что-то новее?
+    if git -C "$WS_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null; then
+        BEHIND="$(git -C "$WS_DIR" rev-list --count HEAD..FETCH_HEAD 2>/dev/null || echo 0)"
+        if [ "${BEHIND:-0}" -gt 0 ]; then
+            echo
+            echo "ВНИМАНИЕ: на GitHub есть $BEHIND новых коммит(ов),"
+            echo "которых нет у вас локально. Сначала выполните:"
+            echo
+            echo "    git pull"
+            echo
+            read -r -p "Собрать всё равно, старую версию? [y/N] " answer
+            [[ "$answer" =~ ^[Yy]$ ]] || exit 1
+        fi
+    fi
+    echo
+fi
+
 # --- Очистка ---------------------------------------------------------------
 if [ "$CLEAN" -eq 1 ]; then
     echo "Удаляю build/ install/ log/ ..."
