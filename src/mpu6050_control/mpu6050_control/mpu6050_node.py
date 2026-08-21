@@ -91,6 +91,20 @@ class MPU6050Node(Node):
         # железо наконец починили.
         self._reconnect_timer = None
 
+        # Ковариации (диагональные, остальные нули).
+        #
+        # ВАЖНО: считаются ДО создания таймера публикации. Раньше этот блок
+        # стоял в самом конце __init__, после create_timer. Пока конструктор
+        # был быстрым, это сходило с рук: таймеры не срабатывают, пока не
+        # запущен spin(). Но подключение к датчику включает калибровку
+        # гироскопа длиной несколько секунд, и порядок стал важен по-настоящему.
+        # Держим инициализацию полей строго перед тем, как что-то сможет их
+        # прочитать.
+        ang_cov = self.get_parameter('angular_velocity_covariance').value
+        lin_cov = self.get_parameter('linear_acceleration_covariance').value
+        self.angular_cov = np.diag([ang_cov, ang_cov, ang_cov]).flatten().tolist()
+        self.linear_cov = np.diag([lin_cov, lin_cov, lin_cov]).flatten().tolist()
+
         # Публикация в топик /imu/data
         self.publisher_ = self.create_publisher(Imu, '/imu/data', 10)
 
@@ -182,13 +196,7 @@ class MPU6050Node(Node):
             if self._reconnect_timer is None:
                 self._reconnect_timer = self.create_timer(
                     self._reconnect_interval, self._try_connect)
-
-        # Сохраняем ковариации (диагональные, остальные нули)
-        ang_cov = self.get_parameter('angular_velocity_covariance').value
-        lin_cov = self.get_parameter('linear_acceleration_covariance').value
-        self.angular_cov = np.diag([ang_cov, ang_cov, ang_cov]).flatten().tolist()
-        self.linear_cov = np.diag([lin_cov, lin_cov, lin_cov]).flatten().tolist()
-
+
     def timer_callback(self):
         # Связи ещё нет — молча ждём, о попытках сообщает _try_connect
         if self.imu is None:

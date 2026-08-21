@@ -88,7 +88,8 @@ class FakeNode:
 
     def create_publisher(self, msg_type, topic, qos):
         self.publishers.append(topic)
-        return types.SimpleNamespace(publish=lambda msg: None)
+        self.published = []
+        return types.SimpleNamespace(publish=self.published.append)
 
     def create_timer(self, period, callback):
         timer = FakeTimer(period, callback)
@@ -302,6 +303,51 @@ def test_reconnects_after_losing_sensor():
     assert imu.closed, 'шина должна быть закрыта перед переподключением'
     assert node._reconnect_timer is not None, \
         'должен запуститься таймер переподключения'
+
+
+def test_publishes_after_successful_start():
+    """После штатного запуска узел обязан публиковать данные.
+
+    Отдельный тест именно на ПЕРВУЮ публикацию. Раньше её никто не
+    проверял, и это дорого обошлось: при правке конструктора блок
+    инициализации ковариаций уехал в другой метод. Узел стартовал без
+    единой жалобы, а падал уже в рабочем цикле, на первом же сообщении.
+
+    Мораль: недостаточно проверить, что узел ЗАПУСТИЛСЯ. Надо проверять,
+    что он РАБОТАЕТ.
+    """
+    mod = load_node_class(WorkingIMU)
+    node = mod.MPU6050Node()
+
+    node.timer_callback()
+
+    published = node.published
+    assert len(published) == 1, 'должно уйти ровно одно сообщение'
+
+    msg = published[0]
+    assert msg.header.frame_id == 'imu_link'
+    # Ориентация не заполняется: её считает imu_filter_madgwick
+    assert msg.orientation_covariance[0] == -1.0
+    # Ковариации обязаны быть заполнены — ровно этого и не хватало
+    assert len(msg.angular_velocity_covariance) == 9
+    assert len(msg.linear_acceleration_covariance) == 9
+    assert msg.linear_acceleration.z == pytest.approx(9.81)
+
+
+def test_covariances_ready_before_first_publish():
+    """Поля ковариаций существуют сразу после конструктора.
+
+    Проверяем не поведение, а порядок инициализации: любое поле, которое
+    читает рабочий цикл, обязано быть готово до создания таймера.
+    """
+    mod = load_node_class(WorkingIMU)
+    node = mod.MPU6050Node()
+
+    assert hasattr(node, 'angular_cov'), \
+        'ковариации должны считаться в конструкторе, а не по ходу дела'
+    assert hasattr(node, 'linear_cov')
+    assert len(node.angular_cov) == 9
+    assert len(node.linear_cov) == 9
 
 
 def test_single_read_error_does_not_trigger_reconnect():
