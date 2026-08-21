@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_navigation</name>
+  <version>1.0.0</version>
+  <description>
+    Автономная уличная навигация гусеничного робота по GNSS-маршруту.
+
+    Стек построен по официальному руководству Nav2 "Navigating Using GPS
+    Localization" (nav2_gps_waypoint_follower_demo):
+
+      imu_filter_madgwick  -> абсолютный курс ENU (гироскоп+акселерометр+компас)
+      robot_localization   -> два EKF (odom->base_link и map->odom)
+                              + navsat_transform_node (WGS84 -> декартовы координаты)
+      nav2                 -> планирование пути, объезд препятствий по лидару,
+                              экшен /follow_gps_waypoints
+
+    Пакет содержит только конфигурацию, launch-файлы и вспомогательные узлы;
+    драйверы железа живут в своих пакетах (kolesa_control, mpu6050_control,
+    compass_control, ydlidar_ros2_driver, elrs_receiver).
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>geographic_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+
+  <!-- Локализация -->
+  <exec_depend>robot_localization</exec_depend>
+  <exec_depend>imu_filter_madgwick</exec_depend>
+
+  <!-- Навигация -->
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+  <exec_depend>nav2_navfn_planner</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_simple_commander</exec_depend>
+
+  <!-- Драйвер GNSS (NMEA по UART) -->
+  <exec_depend>nmea_navsat_driver</exec_depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

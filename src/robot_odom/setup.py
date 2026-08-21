@@ -24,6 +24,17 @@ setup(
     entry_points={
         'console_scripts': [
             'odom_node = robot_odom.odom_node:main',
+            # ИСПРАВЛЕНО: эти два узла существовали в исходниках, но не были
+            # объявлены здесь, поэтому colcon их не устанавливал и
+            # `ros2 run robot_odom waypoint_follower` падал с
+            # "No executable found". Теперь они собираются.
+            #
+            # ВНИМАНИЕ: это УСТАРЕВШИЙ путь навигации. Он оставлен как
+            # запасной вариант на случай, если Nav2 не влезет по ресурсам.
+            # Штатный маршрут теперь едет через Nav2:
+            #   ros2 launch robot_navigation bringup.launch.py
+            'waypoint_follower = robot_odom.waypoint_follower:main',
+            'obstacle_avoider = robot_odom.obstacle_avoider:main',
         ],
     },
 )
