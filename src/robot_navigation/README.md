@@ -358,7 +358,7 @@ ros2 service call /gps_waypoint_commander/cancel_route std_srvs/srv/Trigger
 | `robot_radius: 0.45` | `nav2_params.yaml`, оба костмапа | Габарит вашего шасси. Занижение → робот цепляет препятствия |
 | `desired_linear_vel: 0.6` | `nav2_params.yaml`, `FollowPath` | Крейсерская скорость, м/с |
 | `xy_goal_tolerance: 1.5` | `nav2_params.yaml`, `general_goal_checker` | Допуск прибытия. Для RTK-приёмника можно 0.3 |
-| `width/height: 60` | `nav2_params.yaml`, `global_costmap` | Окно планировщика. Должно быть заметно больше расстояния между точками |
+| `width/height: 120` | `nav2_params.yaml`, `global_costmap` | Окно планировщика. Соседние точки должны быть ближе ~50 м (робот в центре, до края ~60 м) |
 | `lookahead_dist: 1.0` | `nav2_params.yaml`, `FollowPath` | Больше — плавнее, меньше — точнее по траектории |
 | `declination_deg` | аргумент launch | Магнитное склонение вашей местности |
 | `gain: 0.1` | `imu_filter.yaml` | Уменьшите до 0.05, если курс дрожит от вибрации гусениц |
@@ -380,6 +380,16 @@ ros2 service call /gps_waypoint_commander/cancel_route std_srvs/srv/Trigger
 **Nav2 отклоняет маршрут («Nav2 ОТКЛОНИЛ маршрут»).**
 Недоступен сервис `/fromLL` — не поднялся `navsat_transform` или он ещё не
 получил GPS-фикс. Проверьте: `ros2 service list | grep fromLL`.
+
+**Маршрут прерван, в логе командира код отказа Nav2.**
+`gps_waypoint_commander` расшифровывает коды из `nav2_msgs`. Частые:
+
+| Код | Имя | Что делать |
+|---|---|---|
+| 204 | `GOAL_OUTSIDE_MAP` | Следующая точка за краем скользящего костмапа. Поставьте промежуточную или подъедьте ближе |
+| 208 | `NO_VALID_PATH` | Нет пути: препятствие или цель за окном. Смотрите костмап в RViz |
+| 105 | `FAILED_TO_MAKE_PROGRESS` | Робот застрял (трава, яма, progress_checker) |
+| 102 / 202 | `TF_ERROR` | Нет трансформа `map→odom→base_link`. Проверьте оба EKF |
 
 **Маркер робота прыгает между двумя позициями в RViz.**
 Трансформ `odom → base_link` публикуют двое. Убедитесь, что `publish_tf`
@@ -640,8 +650,9 @@ pkill -f 'ros2 launch'        # закрыть вместе с деревом п
 ```
 
 **Nav2 «не тянет» на Raspberry Pi 4.**
-Снизьте `controller_frequency` до 10 Гц, `update_frequency` локального
-костмапа до 3 Гц и разрешение глобального до `0.15`.
+Глобальный костмап уже 120×120 м при разрешении 0.15 м. Если всё равно
+не хватает CPU — снизьте `controller_frequency` до 10 Гц, `update_frequency`
+локального костмапа до 3 Гц и разрешение глобального до `0.2`.
 
 Полезные команды:
 

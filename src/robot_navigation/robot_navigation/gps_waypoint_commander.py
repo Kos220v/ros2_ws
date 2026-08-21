@@ -50,6 +50,7 @@ from rclpy.node import Node
 
 import yaml
 
+from action_msgs.msg import GoalStatus
 from geographic_msgs.msg import GeoPose
 from nav2_msgs.action import FollowGPSWaypoints
 from sensor_msgs.msg import NavSatFix, NavSatStatus
@@ -59,6 +60,102 @@ from std_srvs.srv import Trigger
 
 # Режимы, которые публикует elrs_receiver в /control_mode
 MODE_AUTO = 0
+
+# Половина скользящего окна global_costmap (120×120 м) с запасом.
+# Робот всегда в центре окна, поэтому цель дальше ~60 м планировщик
+# не увидит и вернёт GOAL_OUTSIDE_MAP (204).
+DEFAULT_MAX_WP_SEP = 50.0
+# Бытовой GNSS 2.5–5 м, xy_goal_tolerance 1.5 м — ближе бессмысленно.
+DEFAULT_MIN_WP_SEP = 3.0
+
+# Коды отказа Nav2 (Jazzy). Источник — nav2_msgs/action/*.action.
+# NavigateToPose пробрасывает код вложенного действия (планировщик,
+# контроллер, recovery), поэтому здесь собраны все диапазоны, которые
+# могут прийти в FollowGPSWaypoints.error_code и MissedWaypoint.error_code.
+NAV2_ERROR_CODES = {
+    0:   ('NONE', 'успех'),
+    # FollowPath
+    100: ('UNKNOWN', 'неизвестная ошибка контроллера FollowPath'),
+    101: ('INVALID_CONTROLLER', 'неизвестный или не загружен плагин контроллера'),
+    102: ('TF_ERROR', 'нет трансформа TF — проверьте дерево map→odom→base_link'),
+    103: ('INVALID_PATH', 'путь пустой или некорректный'),
+    104: ('PATIENCE_EXCEEDED', 'контроллер исчерпал запас попыток'),
+    105: ('FAILED_TO_MAKE_PROGRESS',
+          'робот не продвигается (застрял, буксование, progress_checker)'),
+    106: ('NO_VALID_CONTROL', 'контроллер не смог посчитать допустимую скорость'),
+    107: ('CONTROLLER_TIMED_OUT', 'контроллер не уложился во время'),
+    # ComputePathToPose / ComputePathThroughPoses
+    200: ('UNKNOWN', 'неизвестная ошибка планировщика'),
+    201: ('INVALID_PLANNER', 'неизвестный или не загружен плагин планировщика'),
+    202: ('TF_ERROR', 'нет трансформа TF при планировании пути'),
+    203: ('START_OUTSIDE_MAP',
+          'старт вне костмапа — окно не покрывает робота'),
+    204: ('GOAL_OUTSIDE_MAP',
+          'цель вне скользящего костмапа: поставьте точки ближе '
+          'или увеличьте окно global_costmap'),
+    205: ('START_OCCUPIED', 'робот стоит в занятой ячейке костмапа'),
+    206: ('GOAL_OCCUPIED', 'цель в занятой ячейке — препятствие на точке'),
+    207: ('TIMEOUT', 'планировщик не уложился во время'),
+    208: ('NO_VALID_PATH',
+          'нет проходимого пути: препятствие, неизвестное пространство '
+          'или цель за краем окна'),
+    # Humble/Iron FollowPath (на случай другой сборки Nav2)
+    300: ('UNKNOWN', 'неизвестная ошибка контроллера FollowPath'),
+    301: ('INVALID_CONTROLLER', 'неизвестный или не загружен плагин контроллера'),
+    302: ('TF_ERROR', 'нет трансформа TF — проверьте дерево map→odom→base_link'),
+    303: ('INVALID_PATH', 'путь пустой или некорректный'),
+    304: ('PATIENCE_EXCEEDED', 'контроллер исчерпал запас попыток'),
+    305: ('FAILED_TO_MAKE_PROGRESS',
+          'робот не продвигается (застрял, буксование, progress_checker)'),
+    306: ('NO_VALID_CONTROL', 'контроллер не смог посчитать допустимую скорость'),
+    # FollowGPSWaypoints / FollowWaypoints
+    600: ('UNKNOWN', 'неизвестная ошибка waypoint_follower'),
+    601: ('TASK_EXECUTOR_FAILED',
+          'плагин в точке маршрута (wait_at_waypoint) завершился с ошибкой'),
+    602: ('NO_VALID_WAYPOINTS', 'список точек пуст или все точки некорректны'),
+    603: ('STOP_ON_MISSED_WAYPOINT',
+          'stop_on_failure=true: маршрут остановлен на первой непройденной точке'),
+    # Spin
+    700: ('UNKNOWN', 'неизвестная ошибка разворота Spin'),
+    701: ('TIMEOUT', 'разворот Spin не уложился во время'),
+    702: ('TF_ERROR', 'нет трансформа TF во время разворота'),
+    703: ('COLLISION_AHEAD', 'разворот прерван: препятствие впереди'),
+    # BackUp
+    710: ('UNKNOWN', 'неизвестная ошибка отъезда BackUp'),
+    711: ('TIMEOUT', 'отъезд BackUp не уложился во время'),
+    712: ('TF_ERROR', 'нет трансформа TF во время отъезда'),
+    713: ('INVALID_INPUT', 'некорректные параметры отъезда BackUp'),
+    714: ('COLLISION_AHEAD', 'отъезд прерван: препятствие'),
+    # DriveOnHeading
+    720: ('UNKNOWN', 'неизвестная ошибка DriveOnHeading'),
+    721: ('TIMEOUT', 'DriveOnHeading не уложился во время'),
+    722: ('TF_ERROR', 'нет трансформа TF в DriveOnHeading'),
+    723: ('COLLISION_AHEAD', 'DriveOnHeading прерван: препятствие впереди'),
+    724: ('INVALID_INPUT', 'некорректные параметры DriveOnHeading'),
+}
+
+GOAL_STATUS_TEXT = {
+    GoalStatus.STATUS_UNKNOWN: 'UNKNOWN',
+    GoalStatus.STATUS_ACCEPTED: 'ACCEPTED',
+    GoalStatus.STATUS_EXECUTING: 'EXECUTING',
+    GoalStatus.STATUS_CANCELING: 'CANCELING',
+    GoalStatus.STATUS_SUCCEEDED: 'SUCCEEDED',
+    GoalStatus.STATUS_CANCELED: 'CANCELED',
+    GoalStatus.STATUS_ABORTED: 'ABORTED',
+}
+
+
+def decode_nav2_error(code):
+    """Человекочитаемая расшифровка кода отказа Nav2."""
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return f'{code} (не удалось разобрать код)'
+    name, meaning = NAV2_ERROR_CODES.get(
+        code, (None, 'неизвестный код Nav2'))
+    if name is None:
+        return f'{code} ({meaning})'
+    return f'{code} {name} — {meaning}'
 
 
 def yaw_to_quaternion(yaw):
@@ -82,6 +179,11 @@ class GpsWaypointCommander(Node):
         self.declare_parameter('require_gps_fix', True)
         # Сколько секунд ждать поднятия Nav2 перед тем, как ругаться.
         self.declare_parameter('action_wait_timeout', 60.0)
+        # Максимальное расстояние между соседними точками, м. Должно быть
+        # меньше половины скользящего global_costmap (окно 120 м → ~50 м).
+        self.declare_parameter('max_waypoint_separation', DEFAULT_MAX_WP_SEP)
+        # Минимальное расстояние между соседними точками, м.
+        self.declare_parameter('min_waypoint_separation', DEFAULT_MIN_WP_SEP)
 
         self._loops = int(self.get_parameter('number_of_loops').value)
         self._use_rc = bool(self.get_parameter('use_rc_mode').value)
@@ -146,8 +248,9 @@ class GpsWaypointCommander(Node):
 
         raw = data.get('waypoints') or []
         if not raw:
-            self.get_logger().error(
-                f'В файле {path} нет ни одной точки в секции waypoints.')
+            self.get_logger().warning(
+                f'В файле {path} маршрут пуст. Запишите точки '
+                f'gps_waypoint_logger или впишите их вручную.')
             return []
 
         poses = []
@@ -192,16 +295,47 @@ class GpsWaypointCommander(Node):
 
             poses.append(pose)
 
-        # Полезная проверка здравого смысла: считаем длину маршрута.
         if len(poses) >= 2:
-            total = sum(
-                self._distance(poses[i], poses[i + 1])
-                for i in range(len(poses) - 1))
-            self.get_logger().info(
-                f'Длина маршрута: {total:.0f} м '
-                f'по {len(poses)} точкам.')
+            self._check_spacings(poses)
 
         return poses
+
+    def _check_spacings(self, poses):
+        """Проверяет интервалы между соседними GPS-точками."""
+        max_sep = float(self.get_parameter('max_waypoint_separation').value)
+        min_sep = float(self.get_parameter('min_waypoint_separation').value)
+        total = 0.0
+        too_far = 0
+        too_close = 0
+
+        for i in range(len(poses) - 1):
+            dist = self._distance(poses[i], poses[i + 1])
+            total += dist
+            self.get_logger().info(
+                f'  участок {i + 1}→{i + 2}: {dist:.1f} м')
+
+            if dist < min_sep:
+                too_close += 1
+                self.get_logger().warning(
+                    f'Точки {i + 1} и {i + 2} слишком близко ({dist:.1f} м, '
+                    f'минимум {min_sep:.0f} м). Бытовой GNSS даёт 2.5–5 м, '
+                    f'допуск прибытия 1.5 м — робот может «проскочить» '
+                    f'обе сразу.')
+            if dist > max_sep:
+                too_far += 1
+                self.get_logger().warning(
+                    f'Точки {i + 1} и {i + 2} слишком далеко ({dist:.1f} м, '
+                    f'лимит {max_sep:.0f} м). Глобальный костмап — скользящее '
+                    f'окно 120×120 м, робот в центре, до края ~60 м. '
+                    f'Планировщик не увидит цель '
+                    f'(код 204 GOAL_OUTSIDE_MAP). Поставьте промежуточную точку.')
+
+        self.get_logger().info(
+            f'Длина маршрута: {total:.0f} м по {len(poses)} точкам.')
+        if too_far or too_close:
+            self.get_logger().warning(
+                f'Проверка интервалов: слишком далеко {too_far}, '
+                f'слишком близко {too_close}. Маршрут всё равно загружен.')
 
     @staticmethod
     def _distance(a: GeoPose, b: GeoPose):
@@ -276,6 +410,22 @@ class GpsWaypointCommander(Node):
                 self.get_logger().error(msg)
                 return False, msg
 
+        if self._last_fix is not None:
+            first = self._waypoints[0]
+            here = GeoPose()
+            here.position.latitude = float(self._last_fix.latitude)
+            here.position.longitude = float(self._last_fix.longitude)
+            dist0 = self._distance(here, first)
+            max_sep = float(self.get_parameter('max_waypoint_separation').value)
+            self.get_logger().info(
+                f'До первой точки маршрута: {dist0:.1f} м')
+            if dist0 > max_sep:
+                self.get_logger().warning(
+                    f'Первая точка в {dist0:.1f} м — за краем скользящего '
+                    f'костмапа (~60 м от робота). Планировщик, скорее всего, '
+                    f'вернёт 204 GOAL_OUTSIDE_MAP. Подъедьте ближе или '
+                    f'добавьте промежуточную точку.')
+
         timeout = float(self.get_parameter('action_wait_timeout').value)
         self.get_logger().info(
             'Ожидание экшен-сервера /follow_gps_waypoints...')
@@ -333,19 +483,65 @@ class GpsWaypointCommander(Node):
         self._running = False
         self._goal_handle = None
 
-        result = future.result().result
-        missed = list(getattr(result, 'missed_waypoints', []))
+        try:
+            wrapped = future.result()
+        except Exception as exc:
+            self.get_logger().error(
+                f'Не удалось получить результат маршрута: {exc}')
+            return
 
-        if not missed:
+        status = int(getattr(wrapped, 'status', GoalStatus.STATUS_UNKNOWN))
+        status_name = GOAL_STATUS_TEXT.get(status, f'код {status}')
+        result = wrapped.result
+
+        code = getattr(result, 'error_code', 0) or 0
+        err_msg = (getattr(result, 'error_msg', '') or '').strip()
+        missed = list(getattr(result, 'missed_waypoints', []) or [])
+
+        if status == GoalStatus.STATUS_CANCELED:
+            self.get_logger().info('Маршрут отменён.')
+            return
+
+        if status == GoalStatus.STATUS_SUCCEEDED and not missed and not code:
             self.get_logger().info('Маршрут пройден полностью.')
             return
 
+        parts = [f'Nav2 завершил маршрут со статусом {status_name}']
+        if code:
+            parts.append(f'код отказа: {decode_nav2_error(code)}')
+        if err_msg:
+            parts.append(err_msg)
+        log = self.get_logger().error if status == GoalStatus.STATUS_ABORTED \
+            else self.get_logger().warning
+        log('. '.join(parts) + '.')
+
+        if not missed:
+            return
+
         self.get_logger().warning(
-            f'Маршрут завершён, но {len(missed)} точек не пройдено.')
+            f'Не пройдено точек: {len(missed)}.')
         for mw in missed:
-            self.get_logger().warning(
-                f'  точка {getattr(mw, "index", "?")}: '
-                f'{getattr(mw, "error_msg", "причина не указана")}')
+            self.get_logger().warning(f'  {self._format_missed(mw)}')
+
+    @staticmethod
+    def _format_missed(mw):
+        """Одна непройденная точка: индекс + расшифровка кода Nav2."""
+        if isinstance(mw, int):
+            return f'точка {mw + 1}: индекс без кода ошибки'
+
+        idx = getattr(mw, 'index', None)
+        label = f'точка {int(idx) + 1}' if isinstance(idx, int) else 'точка ?'
+
+        bits = []
+        code = getattr(mw, 'error_code', None)
+        if code not in (None, 0):
+            bits.append(decode_nav2_error(code))
+        msg = getattr(mw, 'error_msg', None)
+        if msg:
+            bits.append(str(msg))
+        if not bits:
+            bits.append('причина не указана')
+        return f'{label}: {"; ".join(bits)}'
 
 
 def main(args=None):
