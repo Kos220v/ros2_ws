@@ -118,10 +118,20 @@ class HardwareIMU:
 
         last_err = None
         for addr in self._addr_candidates:
-            try:
-                who = self.bus.read_byte_data(addr, 0x75)
-            except Exception as e:
-                last_err = e
+            # Читаем WHO_AM_I с повторами. Одиночный отказ на шине ничего
+            # не доказывает: помеха от моторов, длинные провода или просто
+            # коллизия с другим обращением к шине дают Errno 5 / Errno 121
+            # на совершенно исправном датчике.
+            who = None
+            for _ in range(5):
+                try:
+                    who = self.bus.read_byte_data(addr, 0x75)
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.05)
+
+            if who is None:
                 continue
 
             if who in known:
@@ -188,6 +198,11 @@ class HardwareIMU:
 
         try:
             # 1) Полный сброс устройства: бит DEVICE_RESET (0x80) в PWR_MGMT_1
+            #
+            # ВНИМАНИЕ при отладке: во время сброса (около 150 мс) датчик не
+            # отвечает НИКОМУ. Если параллельно запустить утилиту проверки
+            # железа, она попадёт в это окно и объявит исправный датчик
+            # неисправным. Поэтому i2c_check просит сначала остановить стек.
             self.bus.write_byte_data(self.mpu_addr, 0x6B, 0x80)
             time.sleep(0.15)
             # 2) Вывод из sleep с ретраями (Errno 5 на старте — обычное дело)

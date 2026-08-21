@@ -36,6 +36,7 @@ mpu6050_control, оба процесса будут дёргать датчик 
 
 import argparse
 import math
+import os
 import sys
 import time
 
@@ -97,6 +98,53 @@ def fail(text, detail=''):
         print(f'       {row}')
 
 
+def read_reg(bus, addr, reg, attempts=6, delay=0.05):
+    """Обёртка: возвращает (значение или None, количество сбоев, ошибка)."""
+    errors = 0
+    last = None
+    for _ in range(attempts):
+        try:
+            return bus.read_byte_data(addr, reg), errors, None
+        except Exception as exc:
+            last = exc
+            errors += 1
+            time.sleep(delay)
+    return None, errors, last
+
+
+def find_competing_process():
+    """Ищет запущенные узлы, которые тоже работают с этими датчиками.
+
+    Самая коварная причина ложного диагноза: стек робота не остановлен.
+    Узел mpu6050_control раз в 5 секунд пытается подключиться и при этом
+    выполняет ПОЛНЫЙ СБРОС датчика. Во время сброса (около 150 мс) чип не
+    отвечает вообще. Если проверка попадёт в это окно, она сообщит о
+    неисправности совершенно исправного датчика.
+    """
+    names = ('mpu6050_control', 'compass_control', 'imu_check')
+    found = []
+    try:
+        for entry in os.listdir('/proc'):
+            if not entry.isdigit():
+                continue
+            # Свой собственный процесс не считаем
+            if int(entry) == os.getpid():
+                continue
+            try:
+                with open(f'/proc/{entry}/cmdline', 'rb') as f:
+                    cmdline = f.read().replace(b'\x00', b' ').decode(
+                        'utf-8', 'replace')
+            except Exception:
+                continue
+            for name in names:
+                if name in cmdline and 'i2c_check' not in cmdline:
+                    found.append((entry, name))
+                    break
+    except Exception:
+        pass
+    return found
+
+
 def read_word_2c(bus, addr, reg):
     """Читает 16-битное знаковое значение (старший байт первым)."""
     high = bus.read_byte_data(addr, reg)
@@ -122,12 +170,26 @@ def check_mpu(bus, addr):
     print()
     print(f'--- MPU6050 по адресу 0x{addr:02X} ---')
 
-    # WHO_AM_I
-    try:
-        who = bus.read_byte_data(addr, 0x75)
-    except Exception as exc:
-        fail(f'Не читается WHO_AM_I: {exc}')
+    # WHO_AM_I — с повторами: одиночный сбой шины ещё ничего не значит
+    who, errs, exc = read_reg(bus, addr, 0x75)
+
+    if who is None:
+        fail(f'Не читается WHO_AM_I после 6 попыток: {exc}',
+             'Устройство ОТКЛИКАЕТСЯ на свой адрес (иначе его не было бы\n'
+             'в списке выше), но не отдаёт содержимое регистра.\n'
+             'Это НЕ похоже на сгоревший чип. Вероятные причины по порядку:\n'
+             '\n'
+             '  1. Стек робота не остановлен, и узел mpu6050_control\n'
+             '     параллельно сбрасывает датчик. Остановите launch и\n'
+             '     повторите проверку.\n'
+             '  2. Слишком высокая частота шины при трёх устройствах.\n'
+             '     Снизьте её до 100 кГц (см. README).\n'
+             '  3. Плохой контакт или длинные провода SDA / SCL.')
         return False
+
+    if errs:
+        warn(f'WHO_AM_I прочитан только с {errs + 1}-й попытки',
+             'Шина работает неустойчиво. Ниже смотрите долю сбоев чтения.')
 
     if who in WHO_AM_I_VALUES:
         ok(f'WHO_AM_I = 0x{who:02X} — {WHO_AM_I_VALUES[who]}')
@@ -309,6 +371,8 @@ def main(argv=None):
         description='Проверка датчиков на шине I2C')
     parser.add_argument('--bus', type=int, default=1,
                         help='номер шины I2C (по умолчанию 1)')
+    parser.add_argument('--force', action='store_true',
+                        help='проверять, даже если стек робота запущен')
     # ROS передаёт свои аргументы даже при запуске через ros2 run — игнорируем их
     args, _ = parser.parse_known_args(
         argv if argv is not None else sys.argv[1:])
@@ -336,6 +400,25 @@ def main(argv=None):
         return 1
 
     ok(f'Шина I2C-{args.bus} открыта')
+
+    # Конкурирующий доступ — самая частая причина ложного диагноза
+    competitors = find_competing_process()
+    if competitors:
+        print()
+        procs = ', '.join(f'{name} (pid {pid})' for pid, name in competitors)
+        fail('СТЕК РОБОТА НЕ ОСТАНОВЛЕН',
+             f'Одновременно с проверкой работают: {procs}\n'
+             '\n'
+             'Узел mpu6050_control раз в 5 секунд выполняет ПОЛНЫЙ СБРОС\n'
+             'датчика, и во время сброса чип не отвечает. Проверка почти\n'
+             'наверняка объявит исправный датчик неисправным.\n'
+             '\n'
+             'Остановите launch (Ctrl+C) и запустите проверку заново.')
+        print()
+        if not args.force:
+            print('Проверка прервана. Чтобы всё равно продолжить: --force')
+            return 1
+        warn('Продолжаю несмотря на предупреждение (--force)')
 
     # --- что вообще есть на шине ---
     print()
