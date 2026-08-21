@@ -54,6 +54,16 @@ controller_server:
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
 
+    # Формат сообщений скорости: false = geometry_msgs/Twist.
+    #
+    # Задано ЯВНО, хотя в Jazzy это и так значение по умолчанию. Причина:
+    # начиная с Kilted значение по умолчанию меняется на true, то есть на
+    # TwistStamped. Наш cmd_switcher принимает Twist, поэтому после
+    # обновления дистрибутива связка развалилась бы МОЛЧА: Nav2 публикует,
+    # мультиплексор не слышит, робот просто не едет и никаких ошибок в
+    # логах нет. Явное значение защищает от этого.
+    enable_stamped_cmd_vel: false
+
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       # Робот обязан проехать 0.5 м за 15 с, иначе считаем, что он застрял
@@ -259,6 +269,16 @@ behavior_server:
     min_rotational_vel: 0.4
     rotational_acc_lim: 2.0
 
+    # Формат сообщений скорости: false = geometry_msgs/Twist.
+    #
+    # Задано ЯВНО, хотя в Jazzy это и так значение по умолчанию. Причина:
+    # начиная с Kilted значение по умолчанию меняется на true, то есть на
+    # TwistStamped. Наш cmd_switcher принимает Twist, поэтому после
+    # обновления дистрибутива связка развалилась бы МОЛЧА: Nav2 публикует,
+    # мультиплексор не слышит, робот просто не едет и никаких ошибок в
+    # логах нет. Явное значение защищает от этого.
+    enable_stamped_cmd_vel: false
+
 waypoint_follower:
   ros__parameters:
     loop_rate: 20
@@ -289,3 +309,13 @@ velocity_smoother:
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
+
+    # Формат сообщений скорости: false = geometry_msgs/Twist.
+    #
+    # Задано ЯВНО, хотя в Jazzy это и так значение по умолчанию. Причина:
+    # начиная с Kilted значение по умолчанию меняется на true, то есть на
+    # TwistStamped. Наш cmd_switcher принимает Twist, поэтому после
+    # обновления дистрибутива связка развалилась бы МОЛЧА: Nav2 публикует,
+    # мультиплексор не слышит, робот просто не едет и никаких ошибок в
+    # логах нет. Явное значение защищает от этого.
+    enable_stamped_cmd_vel: false

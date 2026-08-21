@@ -43,6 +43,8 @@ setup(
             'nav_preflight_check = robot_navigation.nav_preflight_check:main',
             # Проверка датчиков на шине I2C (работает без запущенного стека)
             'i2c_check = robot_navigation.i2c_check:main',
+            # Пробная поездка на заданное расстояние (проверка связки с Nav2)
+            'send_test_goal = robot_navigation.send_test_goal:main',
         ],
     },
 )
