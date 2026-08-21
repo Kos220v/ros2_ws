@@ -48,7 +48,8 @@ class HardwareIMU:
     def __init__(self, bus_num=1, logger=None,
                  acc_invert=False,
                  imu_mount_roll_deg=0.0, imu_mount_pitch_deg=0.0,
-                 imu_mount_yaw_deg=0.0):
+                 imu_mount_yaw_deg=0.0,
+                 mpu_addr=None):
         try:
             self.bus = smbus2.SMBus(bus_num)
         except Exception as e:
@@ -70,7 +71,14 @@ class HardwareIMU:
             )
         else:
             self.mount_rot = None
-        self.mpu_addr = 0x68
+        # Адрес на шине. У MPU6050 их два, и выбирается он НОГОЙ AD0:
+        #   AD0 = GND (или не подключён) -> 0x68
+        #   AD0 = VCC                    -> 0x69
+        # Раньше здесь было жёстко 0x68, и плата с подтянутым AD0 просто
+        # не находилась. Теперь при mpu_addr=None пробуются оба адреса.
+        self.mpu_addr = None
+        self._addr_candidates = [0x68, 0x69] if mpu_addr is None \
+            else [int(mpu_addr)]
 
         # Результаты автокалибровки (вычитаются/прибавляются в get_data)
         self.gyro_bias = np.zeros(3)   # рад/с
@@ -81,9 +89,103 @@ class HardwareIMU:
 
     # --- инициализация -----------------------------------------------------
 
+    def scan_bus(self):
+        """Возвращает список адресов, которые отвечают на шине.
+
+        Аналог `i2cdetect -y 1`, но доступный прямо из кода. Нужен для
+        внятного сообщения об ошибке: одно дело "датчик не отвечает",
+        и совсем другое — "на шине пусто" или "датчик отвечает, но по
+        соседнему адресу".
+        """
+        found = []
+        for addr in range(0x03, 0x78):
+            try:
+                # Чтение байта — самый безобидный способ проверить отклик.
+                self.bus.read_byte(addr)
+                found.append(addr)
+            except Exception:
+                pass
+        return found
+
+    def _find_mpu(self):
+        """Ищет MPU6050 среди возможных адресов по регистру WHO_AM_I."""
+        # WHO_AM_I (0x75) у разных клонов отличается:
+        #   0x68 — оригинальный MPU6050
+        #   0x69 — некоторые копии
+        #   0x70 — MPU6500 / MPU9250
+        #   0x71, 0x73 — прочие клоны
+        known = {0x68, 0x69, 0x70, 0x71, 0x73, 0x98}
+
+        last_err = None
+        for addr in self._addr_candidates:
+            try:
+                who = self.bus.read_byte_data(addr, 0x75)
+            except Exception as e:
+                last_err = e
+                continue
+
+            if who in known:
+                if self.logger:
+                    self.logger.info(
+                        f'MPU6050 найден по адресу 0x{addr:02X} '
+                        f'(WHO_AM_I = 0x{who:02X})')
+                return addr
+
+            if self.logger:
+                self.logger.warning(
+                    f'По адресу 0x{addr:02X} кто-то отвечает, но WHO_AM_I = '
+                    f'0x{who:02X} — это не похоже на MPU6050.')
+
+        # Не нашли: собираем внятную картину шины для сообщения об ошибке.
+        present = self.scan_bus()
+        lines = [f'MPU6050 не отвечает ни по одному из адресов: '
+                 f'{", ".join(f"0x{a:02X}" for a in self._addr_candidates)}.']
+
+        if not present:
+            lines.append('')
+            lines.append('На шине I2C НЕТ НИ ОДНОГО устройства.')
+            lines.append('Значит, дело не в самом датчике, а в шине целиком:')
+            lines.append('  * I2C выключен: sudo raspi-config -> Interface '
+                         'Options -> I2C -> Enable')
+            lines.append('  * не подключены SDA/SCL или нет подтяжки')
+        else:
+            lines.append('')
+            lines.append('Отвечают адреса: '
+                         + ', '.join(f'0x{a:02X}' for a in present))
+            hints = {0x0D: 'магнитометр QMC5883L',
+                     0x1E: 'магнитометр HMC5883L',
+                     0x77: 'барометр BMP180/BMP280',
+                     0x76: 'барометр BMP280',
+                     0x68: 'MPU6050 (AD0 на землю)',
+                     0x69: 'MPU6050 (AD0 на питание)'}
+            for a in present:
+                if a in hints:
+                    lines.append(f'    0x{a:02X} — {hints[a]}')
+            lines.append('')
+            lines.append('Шина ЖИВА (раз другие устройства отвечают), '
+                         'проблема только в MPU6050:')
+            lines.append('  * проверьте питание VCC и землю именно этого '
+                         'модуля')
+            lines.append('  * проверьте пайку SDA/SCL на его плате')
+            lines.append('  * если модуль совмещённый (GY-87 и подобные), '
+                         'MPU мог выйти из строя отдельно от магнитометра')
+
+        if last_err is not None:
+            lines.append('')
+            lines.append(f'Последняя ошибка шины: {last_err}')
+
+        raise RuntimeError('\n'.join(lines))
+
     def _init_mpu(self):
-        """Пробуждение MPU6050 с ретраями (шина I2C бывает занята при старте)
-        и проверкой WHO_AM_I. При устойчивом отказе — RuntimeError (fail-fast)."""
+        """Находит датчик, будит его и проверяет настройки.
+
+        Шина I2C при старте бывает занята, поэтому пробуждение делается
+        с повторами. Если датчик так и не отозвался — RuntimeError с
+        разбором того, что вообще есть на шине.
+        """
+        # Сначала определяем адрес: он зависит от ноги AD0 на плате.
+        self.mpu_addr = self._find_mpu()
+
         try:
             # 1) Полный сброс устройства: бит DEVICE_RESET (0x80) в PWR_MGMT_1
             self.bus.write_byte_data(self.mpu_addr, 0x6B, 0x80)

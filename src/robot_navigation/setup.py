@@ -41,6 +41,8 @@ setup(
             'heading_check = robot_navigation.heading_check:main',
             # Диагностика готовности стека перед выездом
             'nav_preflight_check = robot_navigation.nav_preflight_check:main',
+            # Проверка датчиков на шине I2C (работает без запущенного стека)
+            'i2c_check = robot_navigation.i2c_check:main',
         ],
     },
 )

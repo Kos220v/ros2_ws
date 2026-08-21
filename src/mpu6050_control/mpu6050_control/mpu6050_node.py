@@ -62,6 +62,9 @@ class MPU6050Node(Node):
         # Он же переподключается, если датчик отвалился уже на ходу.
         self.declare_parameter('reconnect_interval', 5.0)
         self.declare_parameter('max_read_errors', 25)
+        # Адрес MPU6050 на шине. 0 = искать автоматически среди
+        # 0x68 и 0x69 (адрес задаётся ногой AD0 на плате датчика).
+        self.declare_parameter('i2c_address', 0)
 
         self._reconnect_interval = float(
             self.get_parameter('reconnect_interval').value)
@@ -69,6 +72,8 @@ class MPU6050Node(Node):
             self.get_parameter('max_read_errors').value)
 
         self._bus_num = bus_num
+        addr = int(self.get_parameter('i2c_address').value)
+        self._mpu_addr = addr if addr > 0 else None
         self._acc_invert = acc_invert
         self._mount = (mount_roll, mount_pitch, mount_yaw)
         self._calibrate_on_start = calibrate_on_start
@@ -110,6 +115,7 @@ class MPU6050Node(Node):
                 imu_mount_roll_deg=self._mount[0],
                 imu_mount_pitch_deg=self._mount[1],
                 imu_mount_yaw_deg=self._mount[2],
+                mpu_addr=self._mpu_addr,
             )
         except Exception as e:
             # Первые сообщения подробные, дальше — редкие, чтобы не забить лог
