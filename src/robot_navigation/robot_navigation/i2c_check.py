@@ -207,6 +207,101 @@ def scan(bus):
     return found
 
 
+def read_bus_baudrate(bus_num):
+    """Пытается узнать текущую частоту шины из sysfs / config.txt."""
+    # Ядро не всегда публикует частоту, поэтому это лишь подсказка.
+    paths = [
+        f'/sys/class/i2c-adapter/i2c-{bus_num}/of_node/clock-frequency',
+    ]
+    for path in paths:
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+            if len(data) == 4:
+                return int.from_bytes(data, 'big')
+        except Exception:
+            continue
+
+    # Запасной вариант: смотрим, что написано в config.txt
+    for cfg in ('/boot/firmware/config.txt', '/boot/config.txt'):
+        try:
+            with open(cfg, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('#'):
+                        continue
+                    for key in ('i2c_arm_baudrate=', 'baudrate='):
+                        if key in line and ('i2c' in line):
+                            try:
+                                return int(line.split(key)[1].split(',')[0])
+                            except ValueError:
+                                pass
+        except Exception:
+            continue
+    return None
+
+
+def stress_test(bus, devices, count=300):
+    """Измеряет долю сбоев чтения — объективная оценка качества шины.
+
+    Именно этим стоит пользоваться при подборе частоты шины и длины
+    проводов: запустил, поменял настройку, запустил снова и сравнил
+    числа, а не ощущения.
+    """
+    print()
+    print(f'--- Стресс-тест шины ({count} чтений на устройство) ---')
+
+    # Регистр для опроса выбираем безобидный, только для чтения.
+    probe_regs = {0x68: 0x75, 0x69: 0x75, 0x0D: 0x0D, 0x1E: 0x0A, 0x76: 0xD0}
+
+    worst = 0.0
+    for addr in devices:
+        reg = probe_regs.get(addr)
+        if reg is None:
+            continue
+
+        errors = 0
+        start = time.time()
+        for _ in range(count):
+            try:
+                bus.read_byte_data(addr, reg)
+            except Exception:
+                errors += 1
+        elapsed = time.time() - start
+
+        rate = 100.0 * errors / count
+        worst = max(worst, rate)
+        name = KNOWN_DEVICES.get(addr, 'устройство')
+        line = (f'0x{addr:02X}  сбоев {errors:3d} из {count} '
+                f'({rate:5.1f}%)  за {elapsed:.1f} с  — {name}')
+
+        if rate == 0.0:
+            ok(line)
+        elif rate < 1.0:
+            warn(line)
+        else:
+            fail(line)
+
+    print()
+    if worst == 0.0:
+        ok('Шина держит нагрузку без единого сбоя')
+    elif worst < 1.0:
+        warn(f'Единичные сбои (до {worst:.1f}%)',
+             'Драйвер их переживает за счёт повторов, но запас невелик.')
+    else:
+        fail(f'Шина нестабильна: до {worst:.1f}% сбоев',
+             'Так работать нельзя — датчики будут пропадать на ходу.\n'
+             'Что делать по порядку:\n'
+             '  1. Снизить частоту шины до 50 или 10 кГц (см. README)\n'
+             '  2. Укоротить провода либо свить каждый сигнал с землёй\n'
+             '  3. Вынести дальний датчик на ОТДЕЛЬНУЮ шину\n'
+             '\n'
+             'Запускайте этот тест после каждого изменения и сравнивайте\n'
+             'проценты — так видно, что реально помогло.')
+
+    return worst
+
+
 def check_mpu(bus, addr):
     """Подробная проверка MPU6050 по найденному адресу."""
     print()
@@ -415,6 +510,10 @@ def main(argv=None):
                         help='номер шины I2C (по умолчанию 1)')
     parser.add_argument('--force', action='store_true',
                         help='проверять, даже если стек робота запущен')
+    parser.add_argument('--no-stress', action='store_true',
+                        help='пропустить нагрузочную проверку шины')
+    parser.add_argument('--stress-count', type=int, default=300,
+                        help='число чтений в нагрузочной проверке')
     # ROS передаёт свои аргументы даже при запуске через ros2 run — игнорируем их
     args, _ = parser.parse_known_args(
         argv if argv is not None else sys.argv[1:])
@@ -509,8 +608,15 @@ def main(argv=None):
     else:
         check_mag(bus, mag_addr)
 
+    # --- нагрузочная проверка качества шины ---
+    if not args.no_stress:
+        stress_test(bus, found, count=args.stress_count)
+
     print()
     print('=' * 70)
+    baud = read_bus_baudrate(args.bus)
+    if baud:
+        print(f'  Частота шины: {baud // 1000} кГц')
     if mpu_addr is not None and mag_addr is not None:
         print(f'  {GREEN}Оба датчика на месте.{RESET}')
     else:

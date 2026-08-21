@@ -94,6 +94,12 @@ def launch_setup(context, *args, **kwargs):
     lidar_delay = float(
         LaunchConfiguration('lidar_delay').perform(context))
 
+    # Номер шины I2C для магнитометра. По умолчанию 1 — общая шина.
+    # Если магнитометр вынесен на длинном проводе и портит общую шину,
+    # его можно перевести на отдельную программную шину (см. README,
+    # раздел про длинные провода) и указать её номер здесь.
+    mag_bus = int(LaunchConfiguration('mag_i2c_bus').perform(context))
+
     # ------------------------------------------------------------ пульт ELRS
     elrs_node = Node(
         package='elrs_receiver',
@@ -205,6 +211,7 @@ def launch_setup(context, *args, **kwargs):
         respawn=True,
         respawn_delay=5.0,
         parameters=[{
+            'bus_num': mag_bus,
             'frame_id': 'imu_link',
             'publish_rate': 25.0,
             # Публикуем в «сырой» топик: магнитное склонение снимет
@@ -330,7 +337,15 @@ def generate_launch_description():
                     'откалиброваться в тишине, без вибрации от мотора лидара',
     )
 
+    mag_bus_arg = DeclareLaunchArgument(
+        'mag_i2c_bus', default_value='1',
+        description='Номер шины I2C для магнитометра. 1 — общая шина; '
+                    'другой номер, если датчик вынесен на отдельную шину '
+                    'из-за длинного провода',
+    )
+
     return LaunchDescription([
         lidar_delay_arg,
+        mag_bus_arg,
         OpaqueFunction(function=launch_setup),
     ])

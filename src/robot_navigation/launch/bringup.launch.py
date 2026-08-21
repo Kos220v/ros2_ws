@@ -85,6 +85,10 @@ def generate_launch_description():
             'lidar_delay', default_value='10.0',
             description='Задержка старта лидара, сек'),
         DeclareLaunchArgument(
+            'mag_i2c_bus', default_value='1',
+            description='Номер шины I2C для магнитометра '
+                        '(если он вынесен на отдельную шину)'),
+        DeclareLaunchArgument(
             'nav2_params_file',
             default_value=os.path.join(nav_share, 'config', 'nav2_params.yaml'),
             description='Файл параметров Nav2'),
@@ -97,6 +101,7 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_hardware')),
         launch_arguments={
             'lidar_delay': LaunchConfiguration('lidar_delay'),
+            'mag_i2c_bus': LaunchConfiguration('mag_i2c_bus'),
         }.items(),
     )
 
