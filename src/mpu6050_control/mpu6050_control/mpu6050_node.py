@@ -83,6 +83,13 @@ class MPU6050Node(Node):
         self.imu = None
         self._read_errors = 0
         self._init_attempts = 0
+        # ВАЖНО: атрибут обязан существовать ДО первого вызова _try_connect().
+        # Этот метод в конце гасит таймер переподключения, и если атрибута
+        # ещё нет, узел падает с AttributeError. Ошибка коварная: она
+        # возникает только на УСПЕШНОМ подключении, поэтому не проявлялась,
+        # пока датчик не отвечал, и вылезла ровно в тот момент, когда
+        # железо наконец починили.
+        self._reconnect_timer = None
 
         # Публикация в топик /imu/data
         self.publisher_ = self.create_publisher(Imu, '/imu/data', 10)
@@ -96,8 +103,6 @@ class MPU6050Node(Node):
         if self.imu is None:
             self._reconnect_timer = self.create_timer(
                 self._reconnect_interval, self._try_connect)
-        else:
-            self._reconnect_timer = None
 
         self.get_logger().info(f'Нода MPU6050 запущена, частота публикации {rate_hz} Гц')
 
