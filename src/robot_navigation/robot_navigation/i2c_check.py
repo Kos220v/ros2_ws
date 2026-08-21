@@ -37,6 +37,7 @@ mpu6050_control, оба процесса будут дёргать датчик 
 import argparse
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -143,6 +144,47 @@ def find_competing_process():
     except Exception:
         pass
     return found
+
+
+def check_pin_functions():
+    """Показывает, в каком режиме сейчас работают выводы GPIO 2 и 3.
+
+    На Raspberry Pi один и тот же вывод могут забрать разные интерфейсы.
+    GPIO 2 и 3 — это SDA1 и SCL1, то есть шина I2C-1. Если какой-то оверлей
+    в config.txt переключил их на другую функцию, шина работать не будет,
+    а сообщения об ошибках будут указывать куда угодно, только не на
+    настоящую причину.
+
+    Проверка не обязательная: если устройства на шине отвечают, значит с
+    выводами всё в порядке. Но когда отвечают не все, знать это полезно.
+    """
+    for tool in (['pinctrl', 'get', '2,3'], ['raspi-gpio', 'get', '2,3']):
+        try:
+            res = subprocess.run(tool, capture_output=True, text=True,
+                                 timeout=5)
+        except (FileNotFoundError, subprocess.SubprocessError):
+            continue
+
+        out = (res.stdout or '').strip()
+        if not out:
+            continue
+
+        # В режиме I2C инструменты пишут func SDA1 / SCL1 либо alt0 / a0
+        low = out.lower()
+        i2c_mode = ('sda1' in low and 'scl1' in low) or \
+                   ('a0' in low or 'alt0' in low)
+
+        if i2c_mode:
+            ok('Выводы GPIO 2 и 3 работают как SDA1 / SCL1', out)
+        else:
+            warn('Выводы GPIO 2 и 3 НЕ в режиме I2C', out
+                 + '\nКакой-то оверлей в /boot/firmware/config.txt забрал их '
+                   'себе.\nЧаще всего это UART или SPI на тех же выводах.')
+        return
+
+    # Инструментов нет — не беда, это лишь вспомогательная проверка
+    warn('Не найдены pinctrl и raspi-gpio — режим выводов не проверен',
+         'Это не ошибка: проверка вспомогательная.')
 
 
 def read_word_2c(bus, addr, reg):
@@ -437,6 +479,11 @@ def main(argv=None):
     for addr in found:
         name = KNOWN_DEVICES.get(addr, 'неизвестное устройство')
         print(f'       0x{addr:02X}  {name}')
+
+    # --- режим выводов ---
+    print()
+    print('--- Режим выводов SDA / SCL ---')
+    check_pin_functions()
 
     # --- MPU6050 ---
     mpu_addr = next((a for a in (0x68, 0x69) if a in found), None)
