@@ -1,0 +1,17 @@
+imu_stm32_bridge:
+  ros__parameters:
+    port: /dev/imu_stm32
+    baud: 115200
+    frame_id: imu_link
+    imu_topic: data
+    mag_topic: mag
+    azimuth_topic: azimuth
+    publish_mag: true
+    # СКО для ковариаций (0 = неизвестна)
+    orientation_stddev: 0.02        # рад (~1.1°)
+    angular_velocity_stddev: 0.01   # рад/с
+    linear_acceleration_stddev: 0.05  # м/с^2
+    magnetic_stddev: 0.000002       # Тл (2 мкТл)
+    # Применяются на устройстве при подключении и на лету
+    rate: 25
+    declination: 11.5  # Москва, + к востоку
